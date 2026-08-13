@@ -140,6 +140,11 @@ class MacDockRenderer {
             return Clutter.EVENT_PROPAGATE;
         });
         this._connect(this._dock._slider, 'notify::slide-x', () => this._wake());
+        this._connect(this._dock, 'showing', () => {
+            this._materialRect = null;
+            this._wake();
+        });
+        this._connect(this._dock, 'hiding', () => this._wake());
         this._connect(this._dock.dash._box, 'child-added', () => this._queueSync());
         this._connect(this._dock.dash._box, 'child-removed', () => this._queueSync());
         this._connect(this._dock.dash, 'icon-size-changed', () => {
@@ -307,7 +312,9 @@ class MacDockRenderer {
         this._paintItems();
         this._paintMaterial();
 
-        if (active || moving) {
+        const dockTransitioning = this._isDockTransitioning();
+
+        if (active || moving || dockTransitioning) {
             this._runningFramesWithoutWork = 0;
         } else {
             this._runningFramesWithoutWork++;
@@ -576,9 +583,23 @@ class MacDockRenderer {
             : a.baseCenterY - b.baseCenterY);
     }
 
+    _isDockTransitioning() {
+        const state = this._dock?.getDockState?.();
+        // docking.js: SHOWING = 1, HIDING = 3.
+        return state === 1 || state === 3;
+    }
+
+    _isDockFullyHidden() {
+        const state = this._dock?.getDockState?.();
+        const slide = Math.max(0, Math.min(1,
+            this._dock?._slider?.slideX ?? 1));
+        // docking.js: HIDDEN = 0. Requiring lifecycle state and final
+        // slide position prevents reveal startup from looking hidden.
+        return state === 0 && slide <= MATERIAL_HIDDEN_SLIDE;
+    }
+
     _pointerInActivationZone(pointerX, pointerY) {
-        if (!this._items.length ||
-            (this._dock._slider?.slideX ?? 1) <= MATERIAL_HIDDEN_SLIDE)
+        if (!this._items.length || this._isDockFullyHidden())
             return false;
 
         const orderedItems = this._orderedItems();
@@ -692,8 +713,7 @@ class MacDockRenderer {
 
     _paintItems() {
         const horizontal = this._dock.isHorizontal;
-        const hidden =
-            (this._dock._slider?.slideX ?? 1) <= MATERIAL_HIDDEN_SLIDE;
+        const hidden = this._isDockFullyHidden();
 
         for (const item of this._items) {
             const {scale} = item;
@@ -829,13 +849,9 @@ class MacDockRenderer {
     }
 
     _paintMaterial() {
-        const slide = Math.max(0, Math.min(1,
-            this._dock._slider?.slideX ?? 1));
-
-        // DashSlideContainer can leave a few material pixels on-screen because
-        // our glass actor intentionally has extra margin. Hide it completely at
-        // the final autohide position so no rounded border/blur strip remains.
-        if (!this._items.length || slide <= MATERIAL_HIDDEN_SLIDE) {
+        // Hide the detached glass only at the real final HIDDEN state.
+        // SHOWING/HIDING continue painting while slide-x animates.
+        if (!this._items.length || this._isDockFullyHidden()) {
             this._material.hide();
             this._materialRect = null;
             return;
@@ -976,7 +992,7 @@ class MacDockRenderer {
 
     _onCapturedEvent(event) {
         if (this._destroyed || this._dragging || !event ||
-            (this._dock._slider?.slideX ?? 1) <= MATERIAL_HIDDEN_SLIDE)
+            this._isDockFullyHidden())
             return Clutter.EVENT_PROPAGATE;
 
         let type;
