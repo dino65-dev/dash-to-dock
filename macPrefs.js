@@ -1,5 +1,6 @@
 // -*- mode: js; js-indent-level: 4; indent-tabs-mode: nil -*-
 
+import Gdk from 'gi://Gdk';
 import Gio from 'gi://Gio';
 import Gtk from 'gi://Gtk';
 
@@ -59,6 +60,10 @@ export function addMacOSPreferencesPage(extensionPreferences, notebook) {
     });
 
     page.set_child(content);
+    const pageAdjustment = page.get_vadjustment();
+    pageAdjustment.set_step_increment(42);
+    pageAdjustment.set_page_increment(280);
+
     // Keep a strong reference for the lifetime of the preferences page.
     page._macOSSettings = settings;
 
@@ -259,8 +264,8 @@ function installPageWheelScroll(scale) {
     const controller = Gtk.EventControllerScroll.new(
         Gtk.EventControllerScrollFlags.VERTICAL);
     controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE);
-    controller.connect('scroll', (_controller, _dx, dy) => {
-        if (!dy)
+    controller.connect('scroll', (scroll, _dx, dy) => {
+        if (!Number.isFinite(dy) || Math.abs(dy) < 0.001)
             return false;
 
         let parent = scale.get_parent();
@@ -274,10 +279,22 @@ function installPageWheelScroll(scale) {
         const lower = adjustment.get_lower();
         const upper = adjustment.get_upper();
         const pageSize = adjustment.get_page_size();
-        const step = Math.max(34, adjustment.get_step_increment());
         const maximum = Math.max(lower, upper - pageSize);
+        let delta;
+
+        if (scroll.get_unit?.() === Gdk.ScrollUnit.SURFACE) {
+            // Touchpads report logical surface pixels: use them directly and
+            // cap a single event so a driver spike cannot jump half the page.
+            delta = Math.max(-72, Math.min(72, dy));
+        } else {
+            // Mouse wheels report detent clicks. Give each click one stable,
+            // modest page step rather than multiplying raw deltas.
+            const clicks = Math.max(-3, Math.min(3, dy));
+            delta = clicks * 42;
+        }
+
         const value = Math.max(lower, Math.min(maximum,
-            adjustment.get_value() + dy * step * 1.8));
+            adjustment.get_value() + delta));
         adjustment.set_value(value);
         return true;
     });
