@@ -35,14 +35,12 @@ jobs:
       - name: Compile extension
         run: make
 
-      - name: Syntax check experimental JavaScript
+      - name: Syntax check native renderer JavaScript
         run: |
           node --check extension.js
           node --check macDockEffects.js
 
       - name: Lint JavaScript
-        id: lint
-        continue-on-error: true
         run: make check
 
       - name: Build installable package tree
@@ -61,23 +59,29 @@ jobs:
       - name: Write build summary
         run: |
           {
-            echo '## macOS fish-eye test build'
+            echo '## Native macOS dock renderer v2'
             echo ''
-            echo 'Download the **dash-to-dock-macos-test** artifact below.'
-            echo 'The downloaded artifact ZIP is the extension package itself.'
+            echo 'Download the **dash-to-dock-macos-native-v2** artifact below.'
+            echo 'The downloaded artifact ZIP is the installable GNOME extension package.'
             echo ''
-            echo "ESLint result: ${{ steps.lint.outcome }} (non-blocking for this experimental test build)"
+            echo 'This build uses:'
+            echo '- high-resolution icon render actors'
+            echo '- Clutter frame-clock animation'
+            echo '- damped spring motion'
+            echo '- continuous geometry-derived fish-eye spacing'
+            echo '- native Dash-to-Dock input/DND backend'
+            echo '- optional Shell background blur'
             echo ''
             echo 'Install on GNOME with:'
             echo '```bash'
-            echo 'gnome-extensions install --force ~/Downloads/dash-to-dock-macos-test.zip'
+            echo 'gnome-extensions install --force ~/Downloads/dash-to-dock-macos-native-v2.zip'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload ready-to-install extension
         uses: actions/upload-artifact@v4
         with:
-          name: dash-to-dock-macos-test
+          name: dash-to-dock-macos-native-v2
           path: _build/
           if-no-files-found: error
           retention-days: 30
