@@ -131,16 +131,36 @@ export default class DashToDockExtension extends Extension.Extension {
         dockManager = new DockManager(this);
         this._macExternalCompat = new MacExternalCompat(dockManager, this);
         this._macDockEffects = new MacDockEffects(dockManager, this);
+
+        this._macBlurDocksReadyId = dockManager.connect(
+            'docks-ready', () => this._clipMacBlur());
+        this._macBlurStyleId = this._macDockEffects._settings.connect(
+            'changed::macos-style', () => this._clipMacBlur());
+        this._clipMacBlur();
     }
 
     disable() {
         global.disconnect(this._shutdownID);
         delete this._shutdownID;
+
+        if (this._macBlurDocksReadyId)
+            dockManager?.disconnect(this._macBlurDocksReadyId);
+        delete this._macBlurDocksReadyId;
+
+        if (this._macBlurStyleId && this._macDockEffects?._settings)
+            this._macDockEffects._settings.disconnect(this._macBlurStyleId);
+        delete this._macBlurStyleId;
+
         this._macDockEffects?.destroy();
         this._macDockEffects = null;
         this._macExternalCompat?.destroy();
         this._macExternalCompat = null;
         dockManager?.destroy();
         dockManager = null;
+    }
+
+    _clipMacBlur() {
+        for (const renderer of this._macDockEffects?._renderers?.values?.() ?? [])
+            renderer._blurCore?.set_clip_to_allocation?.(true);
     }
 }
