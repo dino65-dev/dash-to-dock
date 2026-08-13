@@ -113,7 +113,7 @@ jobs:
               "        delete this._staticBox;\n",
               "        this._staticBox = null;\n")
 
-          # Supported Shell versions all provide new_for_actor().  Removing the
+          # Supported Shell versions all provide new_for_actor(). Removing the
           # legacy constructor fallback avoids an unnecessary owned Timeline
           # path while preserving the same frame-clock animation.
           replace('_ego/macDockEffects.js',
@@ -127,9 +127,9 @@ jobs:
               "        }\n",
               "        this._timeline = Clutter.Timeline.new_for_actor(this._layer, 1000);\n")
 
-          # GNOME 45+ prefers fillPreferencesWindow().  Reproduce Shell's
+          # GNOME 45+ prefers fillPreferencesWindow(). Reproduce Shell's
           # generic widget wrapping explicitly so the existing notebook and the
-          # corrected macOS/Fisheye scrolling behavior stay unchanged.
+          # corrected Fisheye scrolling behavior stay unchanged.
           prefs = Path('_ego/prefs.js')
           text = prefs.read_text()
           text = text.replace("import GLib from 'gi://GLib';\n",
@@ -176,7 +176,8 @@ jobs:
           node --check _ego/docking.js
           node --check _ego/macDockEffects.js
           node --check _ego/prefs.js
-          eslint --no-ignore _ego/appIcons.js _ego/appIconIndicators.js \
+          ESLINT_USE_FLAT_CONFIG=false eslint --no-ignore \
+            _ego/appIcons.js _ego/appIconIndicators.js \
             _ego/docking.js _ego/macDockEffects.js _ego/prefs.js
           glib-compile-schemas --strict _ego/schemas
           rm -f _ego/schemas/gschemas.compiled
