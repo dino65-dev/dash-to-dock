@@ -24,6 +24,7 @@ EXTRA_MODULES = \
                 intellihide.js \
                 macDockEffects.js \
                 macDockInteractions.js \
+                macThumbnailFisheyeBase.js \
                 macThumbnailFisheye.js \
                 macPrefs.js \
                 prefs.js \
