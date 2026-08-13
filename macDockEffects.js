@@ -2,6 +2,7 @@
 
 import {
     Clutter,
+    Gio,
     Shell,
     St,
 } from './dependencies/gi.js';
@@ -17,6 +18,8 @@ const VELOCITY_EPSILON = 0.02;
 const MATERIAL_MARGIN = 5;
 const MATERIAL_HIDDEN_SLIDE = 0.035;
 const EDGE_REVEAL_TOLERANCE = 2;
+const REFLECTION_GAP = 2;
+const DIVIDER_THICKNESS = 1;
 const DOT_SIZE = 4;
 
 /**
@@ -110,6 +113,11 @@ class MacDockRenderer {
         this._lastSeparator = null;
         this._separatorOpacity = 255;
         this._materialRect = null;
+        this._blurCore = null;
+        this._divider = null;
+        this._interfaceSettings = new Gio.Settings({
+            schema_id: 'org.gnome.desktop.interface',
+        });
     }
 
     enable() {
@@ -120,13 +128,28 @@ class MacDockRenderer {
         this._layer.set_size(global.stage.width, global.stage.height);
         Main.uiGroup.add_child(this._layer);
 
+        // Blur is intentionally isolated from the rounded shell. Keeping
+        // the compositor blur inside the corner arcs prevents a rectangular
+        // offscreen halo from leaking outside the rounded dock.
+        this._blurCore = new St.Widget({
+            reactive: false,
+        });
+        this._layer.add_child(this._blurCore);
+
         this._material = new St.Widget({
             reactive: false,
             style_class: 'macos-dock-native-material',
         });
         this._layer.add_child(this._material);
+
+        this._divider = new St.Widget({
+            reactive: false,
+        });
+        this._layer.add_child(this._divider);
+
         this._updateMaterialStyle();
         this._configureBlur();
+        this._updateDecorationStyle();
 
         this._connect(this._dock._box, 'enter-event', () => {
             this._wake();
@@ -156,6 +179,13 @@ class MacDockRenderer {
             () => this._queueSync());
         this._connect(global.stage, 'notify::width', () => this._resizeLayer());
         this._connect(global.stage, 'notify::height', () => this._resizeLayer());
+        this._connect(this._interfaceSettings, 'changed::color-scheme', () => {
+            this._updateMaterialStyle();
+            this._configureBlur();
+            this._updateDecorationStyle();
+            this._materialRect = null;
+            this._wake();
+        });
 
         this._connect(this._settings, 'changed', (_settings, key) => {
             if (key === 'macos-style')
@@ -164,11 +194,23 @@ class MacDockRenderer {
             if (key === 'macos-magnification' || key === 'macos-icon-quality')
                 this._needsTextureRebuild = true;
 
-            if (key.startsWith('macos-glass') || key === 'macos-corner-radius') {
+            const materialSetting = key.startsWith('macos-glass') ||
+                key === 'macos-corner-radius' ||
+                key === 'macos-adaptive-dark' ||
+                key === 'macos-light-opacity' ||
+                key === 'macos-dark-opacity' ||
+                key === 'macos-dynamic-border' ||
+                key === 'macos-border-opacity';
+
+            if (materialSetting) {
                 this._updateMaterialStyle();
                 this._configureBlur();
+                this._updateDecorationStyle();
                 this._materialRect = null;
             }
+
+            if (key === 'macos-divider-opacity' || key === 'macos-divider')
+                this._updateDecorationStyle();
 
             this._queueSync();
         });
@@ -210,10 +252,15 @@ class MacDockRenderer {
         }
         this._connections = [];
 
+        this._blurCore?.destroy();
+        this._divider?.destroy();
         this._material?.destroy();
         this._layer?.destroy();
+        this._blurCore = null;
+        this._divider = null;
         this._material = null;
         this._layer = null;
+        this._interfaceSettings = null;
         this._settings = null;
         this._dock = null;
     }
@@ -368,6 +415,7 @@ class MacDockRenderer {
         this._needsTextureRebuild = false;
         this._materialRect = null;
         this._setMacPresentation(true);
+        this._updateDecorationStyle();
     }
 
     _createItem(descriptor) {
@@ -411,6 +459,21 @@ class MacDockRenderer {
         descriptor.source.set_pivot_point(pivotX, pivotY);
         this._layer.add_child(actor);
 
+        let reflection = null;
+        try {
+            reflection = new Clutter.Clone({
+                source: actor,
+                reactive: false,
+            });
+            reflection.set_size(textureSize, textureSize);
+            reflection.set_pivot_point(0.5, 1);
+            this._layer.add_child(reflection);
+            this._layer.set_child_below_sibling(reflection, actor);
+        } catch {
+            // Reflection is optional if a future Clutter version changes Clone.
+            reflection = null;
+        }
+
         const dot = new St.Widget({
             reactive: false,
             style: 'background-color: rgba(255, 255, 255, 0.90); ' +
@@ -423,6 +486,7 @@ class MacDockRenderer {
         const item = {
             ...descriptor,
             actor,
+            reflection,
             dot,
             textureSize,
             baseSize,
@@ -480,6 +544,7 @@ class MacDockRenderer {
                 }
             }
 
+            item.reflection?.destroy();
             item.actor?.destroy();
             item.dot?.destroy();
         }
@@ -797,8 +862,36 @@ class MacDockRenderer {
                 height: visualSize,
             };
 
+            this._paintReflection(item, actorX, hidden);
             this._paintRunningDot(item, centerX, centerY, hidden);
         }
+    }
+
+    _paintReflection(item, actorX, hidden) {
+        if (!item.reflection)
+            return;
+
+        const enabled = !hidden &&
+            this._dock.position === St.Side.BOTTOM &&
+            this._settings.get_boolean('macos-reflection');
+        if (!enabled) {
+            item.reflection.hide();
+            return;
+        }
+
+        const opacity = Math.max(0, Math.min(0.4,
+            this._settings.get_double('macos-reflection-opacity')));
+        const depth = Math.max(0.05, Math.min(0.35,
+            this._settings.get_double('macos-reflection-height')));
+        const baseTextureScale = item.baseSize / item.textureSize;
+        const renderScale = baseTextureScale * item.scale;
+        const shelfY = item.baseCenterY + item.baseSize / 2 + REFLECTION_GAP;
+
+        item.reflection.set_position(
+            Math.round(actorX), Math.round(shelfY - item.textureSize));
+        item.reflection.set_scale(renderScale, -renderScale * depth);
+        item.reflection.opacity = Math.round(opacity * 255);
+        item.reflection.show();
     }
 
     _paintRunningDot(item, centerX, centerY, hidden) {
@@ -854,6 +947,8 @@ class MacDockRenderer {
         // SHOWING/HIDING continue painting while slide-x animates.
         if (!this._items.length || this._isDockFullyHidden()) {
             this._material.hide();
+            this._blurCore?.hide();
+            this._divider?.hide();
             this._materialRect = null;
             return;
         }
@@ -883,6 +978,8 @@ class MacDockRenderer {
 
         if (!Number.isFinite(minX) || !Number.isFinite(minY)) {
             this._material.hide();
+            this._blurCore?.hide();
+            this._divider?.hide();
             this._materialRect = null;
             return;
         }
@@ -897,41 +994,189 @@ class MacDockRenderer {
         };
 
         this._material.show();
+        this._paintDivider(orderedItems, rect);
 
         // Avoid pointless layout/blur invalidation on frames where integer
-        // geometry did not change.
+        // geometry did not change. Divider geometry still updates every frame.
         if (sameRect(this._materialRect, rect))
             return;
 
         this._material.set_position(rect.x, rect.y);
         this._material.set_size(rect.width, rect.height);
+        this._layoutBlurCore(rect);
         this._materialRect = rect;
+    }
+
+    _layoutBlurCore(rect) {
+        if (!this._blurCore)
+            return;
+
+        if (!this._settings.get_boolean('macos-glass-blur')) {
+            this._blurCore.hide();
+            return;
+        }
+
+        const radius = Math.max(8,
+            this._settings.get_double('macos-corner-radius'));
+        const blurRadius = Math.max(0,
+            this._settings.get_int('macos-glass-radius'));
+        const arcInset = Math.max(6, radius * 0.72, blurRadius * 0.5);
+        const edgeInset = Math.max(4, Math.min(9, blurRadius * 0.25));
+        const horizontal = this._dock.isHorizontal;
+        const xInset = horizontal ? arcInset : edgeInset;
+        const yInset = horizontal ? edgeInset : arcInset;
+        const width = Math.max(1, rect.width - xInset * 2);
+        const height = Math.max(1, rect.height - yInset * 2);
+
+        this._blurCore.set_position(
+            Math.round(rect.x + xInset), Math.round(rect.y + yInset));
+        this._blurCore.set_size(Math.round(width), Math.round(height));
+        this._blurCore.show();
+    }
+
+    _paintDivider(orderedItems, rect) {
+        if (!this._divider ||
+            !this._settings.get_boolean('macos-divider')) {
+            this._divider?.hide();
+            return;
+        }
+
+        const specialIndex = orderedItems.findIndex(item =>
+            item.kind === 'app' && (item.app?.location || item.app?.isTrash));
+        if (specialIndex <= 0) {
+            this._divider.hide();
+            return;
+        }
+
+        const special = orderedItems[specialIndex];
+        let previous = null;
+        for (let i = specialIndex - 1; i >= 0; i--) {
+            if (orderedItems[i].kind === 'app') {
+                previous = orderedItems[i];
+                break;
+            }
+        }
+
+        if (!previous?.baseRect || !special.baseRect) {
+            this._divider.hide();
+            return;
+        }
+
+        const horizontal = this._dock.isHorizontal;
+        if (horizontal) {
+            const previousEnd = previous.baseRect.x + previous.offset +
+                previous.baseRect.width;
+            const specialStart = special.baseRect.x + special.offset;
+            const x = (previousEnd + specialStart) / 2;
+            const height = Math.max(18,
+                Math.min(rect.height * 0.62, special.baseSize * 0.78));
+            this._divider.set_position(
+                Math.round(x - DIVIDER_THICKNESS / 2),
+                Math.round(rect.y + (rect.height - height) / 2));
+            this._divider.set_size(DIVIDER_THICKNESS, Math.round(height));
+        } else {
+            const previousEnd = previous.baseRect.y + previous.offset +
+                previous.baseRect.height;
+            const specialStart = special.baseRect.y + special.offset;
+            const y = (previousEnd + specialStart) / 2;
+            const width = Math.max(18,
+                Math.min(rect.width * 0.62, special.baseSize * 0.78));
+            this._divider.set_position(
+                Math.round(rect.x + (rect.width - width) / 2),
+                Math.round(y - DIVIDER_THICKNESS / 2));
+            this._divider.set_size(Math.round(width), DIVIDER_THICKNESS);
+        }
+
+        this._divider.show();
+    }
+
+    _isDarkMode() {
+        if (!this._settings?.get_boolean('macos-adaptive-dark'))
+            return true;
+
+        try {
+            return this._interfaceSettings?.get_string('color-scheme') ===
+                'prefer-dark';
+        } catch {
+            return true;
+        }
     }
 
     _updateMaterialStyle() {
         if (!this._material || !this._settings)
             return;
 
-        const opacity = Math.max(0.05, Math.min(0.95,
+        const adaptive = this._settings.get_boolean('macos-adaptive-dark');
+        const dark = this._isDarkMode();
+        const fallbackOpacity = Math.max(0.05, Math.min(0.95,
             this._settings.get_double('macos-glass-opacity')));
-        const radius =
-            Math.max(8, this._settings.get_double('macos-corner-radius'));
+        const lightOpacity = Math.max(0.1, Math.min(0.9,
+            this._settings.get_double('macos-light-opacity')));
+        const darkOpacity = Math.max(0.1, Math.min(0.95,
+            this._settings.get_double('macos-dark-opacity')));
+        let opacity = fallbackOpacity;
+        if (adaptive)
+            opacity = dark ? darkOpacity : lightOpacity;
+        const radius = Math.max(8,
+            this._settings.get_double('macos-corner-radius'));
+        const dynamicBorder =
+            this._settings.get_boolean('macos-dynamic-border');
+        const borderOpacity = Math.max(0, Math.min(0.7,
+            this._settings.get_double('macos-border-opacity')));
+        const background = dark
+            ? `rgba(26, 26, 30, ${opacity})`
+            : `rgba(242, 242, 246, ${opacity})`;
+        let border = 'rgba(255, 255, 255, 0.18)';
 
+        if (dynamicBorder) {
+            border = dark
+                ? `rgba(255, 255, 255, ${borderOpacity})`
+                : `rgba(0, 0, 0, ${borderOpacity})`;
+        }
+
+        // Intentionally no box-shadow: St's shadow paint box is rectangular
+        // outside the rounded background and caused the visible square halo.
         this._material.set_style(
-            `background-color: rgba(30, 30, 32, ${opacity}); ` +
+            `background-color: ${background}; ` +
             `border-radius: ${radius}px; ` +
-            'border: 1px solid rgba(255, 255, 255, 0.18); ' +
-            'box-shadow: 0 10px 32px 0 rgba(0, 0, 0, 0.34);');
+            `border: 1px solid ${border};`);
+
+        this._blurCore?.set_style(
+            'background-color: rgba(255, 255, 255, 0.008); ' +
+            `border-radius: ${Math.max(2, radius - 6)}px;`);
+    }
+
+    _updateDecorationStyle() {
+        if (!this._settings)
+            return;
+
+        const dark = this._isDarkMode();
+        const foreground = dark
+            ? 'rgba(255, 255, 255, 0.90)'
+            : 'rgba(0, 0, 0, 0.72)';
+        const dividerOpacity = Math.max(0.05, Math.min(0.8,
+            this._settings.get_double('macos-divider-opacity')));
+        const dividerColor = dark
+            ? `rgba(255, 255, 255, ${dividerOpacity})`
+            : `rgba(0, 0, 0, ${dividerOpacity})`;
+
+        for (const item of this._items) {
+            item.dot?.set_style(
+                `background-color: ${foreground}; border-radius: 99px;`);
+        }
+        this._divider?.set_style(`background-color: ${dividerColor};`);
     }
 
     _configureBlur() {
-        if (!this._material || !this._settings)
+        if (!this._blurCore || !this._settings)
             return;
 
-        this._material.clear_effects?.();
+        this._blurCore.clear_effects?.();
 
-        if (!this._settings.get_boolean('macos-glass-blur'))
+        if (!this._settings.get_boolean('macos-glass-blur')) {
+            this._blurCore.hide();
             return;
+        }
         if (!Shell.BlurEffect || Shell.BlurMode?.BACKGROUND === undefined)
             return;
 
@@ -939,9 +1184,9 @@ class MacDockRenderer {
             const blur = new Shell.BlurEffect({
                 mode: Shell.BlurMode.BACKGROUND,
                 radius: this._settings.get_int('macos-glass-radius'),
-                brightness: 0.88,
+                brightness: this._isDarkMode() ? 0.88 : 1.02,
             });
-            this._material.add_effect_with_name('macos-dock-blur', blur);
+            this._blurCore.add_effect_with_name('macos-dock-blur', blur);
         } catch {
             // Blur is optional across the supported GNOME Shell range.
         }
