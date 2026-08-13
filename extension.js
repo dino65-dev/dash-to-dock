@@ -5,6 +5,7 @@ import {St} from './dependencies/gi.js';
 import {DockManager} from './docking.js';
 import {MacDockEffects} from './macDockEffects.js';
 import {MacDockInteractions} from './macDockInteractions.js';
+import {MacThumbnailFisheye} from './macThumbnailFisheye.js';
 import {Extension} from './dependencies/shell/extensions/extension.js';
 
 const MACOS_SCHEMA = 'org.gnome.shell.extensions.dash-to-dock.macos';
@@ -312,12 +313,16 @@ export default class DashToDockExtension extends Extension.Extension {
             this._macDockEffects, dockManager);
         this._macDockInteractions = new MacDockInteractions(
             this._macDockEffects, dockManager, this);
+        this._macThumbnailFisheye = new MacThumbnailFisheye(
+            this._macDockInteractions);
     }
 
     disable() {
         global.disconnect(this._shutdownID);
         delete this._shutdownID;
 
+        this._macThumbnailFisheye?.destroy();
+        this._macThumbnailFisheye = null;
         this._macDockInteractions?.destroy();
         this._macDockInteractions = null;
         this._macRoundedBlur?.destroy();
