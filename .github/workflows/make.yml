@@ -8,6 +8,7 @@ name: Build & Package
       - master
       - ubuntu-dock
       - make_ci
+      - feature/macos-interactions-v114
 
 permissions:
   contents: read
@@ -37,6 +38,7 @@ jobs:
         run: |
           node --check extension.js
           node --check macDockEffects.js
+          node --check macDockInteractions.js
           node --check macPrefs.js
           node --check prefs.js
 
@@ -51,6 +53,7 @@ jobs:
           test -f _build/metadata.json
           test -f _build/extension.js
           test -f _build/macDockEffects.js
+          test -f _build/macDockInteractions.js
           test -f _build/macPrefs.js
           test -f _build/prefs.js
           test -f _build/stylesheet.css
@@ -61,21 +64,22 @@ jobs:
       - name: Write build summary
         run: |
           {
-            echo '## Dash to Dock — macOS Native'
+            echo '## Dash to Dock — macOS Native v114'
             echo ''
-            echo 'Download the **dash-to-dock-macos-native** artifact below.'
+            echo 'Download the **dash-to-dock-macos-native-v114-interactions** artifact below.'
             echo ''
-            echo '- native high-resolution fish-eye renderer'
-            echo '- frame-clock spring animation and elastic material'
-            echo '- seamless rounded translucent fallback (no rectangular blur artifact)'
-            echo '- optional true rounded dynamic blur when a compatible gi://Blur provider exists'
-            echo '- reflections, adaptive appearance, divider and integrated preferences'
+            echo '- launch bounce until a main window appears'
+            echo '- persistent slow alert bounce for urgent background apps'
+            echo '- live minimized-window thumbnail tray after the divider'
+            echo '- external file-drag compatibility highlighting'
+            echo '- contextual recent-file and window-control quick menus'
+            echo '- v113 fish-eye/material renderer unchanged'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload ready-to-install extension
         uses: actions/upload-artifact@v4
         with:
-          name: dash-to-dock-macos-native
+          name: dash-to-dock-macos-native-v114-interactions
           path: _build/
           if-no-files-found: error
           retention-days: 30

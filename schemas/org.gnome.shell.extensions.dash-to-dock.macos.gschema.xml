@@ -121,5 +121,37 @@
       <summary>Divider opacity</summary>
       <description>Opacity of the structural divider line.</description>
     </key>
+
+    <key type="b" name="macos-launch-bounce">
+      <default>true</default>
+      <summary>Bounce applications while launching</summary>
+      <description>Continuously bounce a launched application icon until a normal main window appears, with a safety timeout if the launch fails.</description>
+    </key>
+    <key type="b" name="macos-alert-bounce">
+      <default>true</default>
+      <summary>Bounce applications that need attention</summary>
+      <description>Use a slower persistent bounce while a background application has an urgent or demands-attention window.</description>
+    </key>
+    <key type="b" name="macos-minimized-thumbnails">
+      <default>true</default>
+      <summary>Show minimized window thumbnail tray</summary>
+      <description>Show live miniature previews of minimized windows after the structural divider and before mounted locations or Trash.</description>
+    </key>
+    <key type="b" name="macos-dnd-highlights">
+      <default>true</default>
+      <summary>Highlight file drop targets</summary>
+      <description>During an external file drag, dim incompatible application icons and highlight applications that declare file or URI support.</description>
+    </key>
+    <key type="b" name="macos-quick-menu">
+      <default>true</default>
+      <summary>Enable contextual quick menus</summary>
+      <description>Augment the native right-click and long-press application menu with recent files and window controls while preserving application-specific desktop actions.</description>
+    </key>
+    <key type="i" name="macos-recent-files-count">
+      <default>5</default>
+      <range min="0" max="10"/>
+      <summary>Recent files in quick menu</summary>
+      <description>Maximum number of compatible recent files shown in an application's contextual quick menu.</description>
+    </key>
   </schema>
 </schemalist>

@@ -27,6 +27,12 @@ const RESET_KEYS = [
     'macos-reflection-height',
     'macos-divider',
     'macos-divider-opacity',
+    'macos-launch-bounce',
+    'macos-alert-bounce',
+    'macos-minimized-thumbnails',
+    'macos-dnd-highlights',
+    'macos-quick-menu',
+    'macos-recent-files-count',
 ];
 
 export function addMacOSPreferencesPage(extensionPreferences, notebook) {
@@ -71,9 +77,9 @@ export function addMacOSPreferencesPage(extensionPreferences, notebook) {
 
     page.append(makeSectionLabel('Frosted Glass'));
     page.append(makeSwitchRow(settings, 'macos-glass-blur', 'Frosted glass blur',
-        'Use GNOME Shell background blur so wallpaper and windows tint the material naturally.'));
+        'Use true rounded dynamic blur when available; otherwise keep the seamless translucent material.'));
     page.append(makeIntScaleRow(settings, 'macos-glass-radius', 'Blur radius',
-        'Blur strength for the compositor glass material.', 0, 64, 1,
+        'Blur strength for an optional rounded-blur provider.', 0, 64, 1,
         value => `${Math.round(value)} px`));
     page.append(makeSwitchRow(settings, 'macos-adaptive-dark', 'Adaptive light / dark material',
         'Follow the GNOME system color scheme automatically.'));
@@ -87,7 +93,7 @@ export function addMacOSPreferencesPage(extensionPreferences, notebook) {
         'Used when adaptive appearance is disabled.', 0.05, 0.95, 0.02,
         value => `${Math.round(value * 100)}%`));
     page.append(makeDoubleScaleRow(settings, 'macos-corner-radius', 'Corner radius',
-        'Radius shared by the visible shell and GPU blur mask.', 8, 40, 1,
+        'Radius of the rounded dock material.', 8, 40, 1,
         value => `${Math.round(value)} px`));
 
     page.append(makeSectionLabel('Border & Shelf'));
@@ -107,10 +113,25 @@ export function addMacOSPreferencesPage(extensionPreferences, notebook) {
 
     page.append(makeSectionLabel('Structure'));
     page.append(makeSwitchRow(settings, 'macos-divider', 'Persistent divider',
-        'Separate normal app icons from mounted locations, folders and Trash.'));
+        'Separate normal app icons from minimized-window previews, mounted locations and Trash.'));
     page.append(makeDoubleScaleRow(settings, 'macos-divider-opacity', 'Divider contrast',
         'Strength of the structural separator line.', 0.05, 0.8, 0.02,
         value => `${Math.round(value * 100)}%`));
+
+    page.append(makeSectionLabel('Interactions'));
+    page.append(makeSwitchRow(settings, 'macos-launch-bounce', 'Bounce on launch',
+        'Bounce a launching app continuously until its main window is ready.'));
+    page.append(makeSwitchRow(settings, 'macos-alert-bounce', 'Alert bouncing',
+        'Use a slower persistent bounce when a background app requires attention.'));
+    page.append(makeSwitchRow(settings, 'macos-minimized-thumbnails', 'Minimized window tray',
+        'Show live miniature window previews after the divider when windows are minimized.'));
+    page.append(makeSwitchRow(settings, 'macos-dnd-highlights', 'Drag-and-drop highlights',
+        'Dim incompatible apps and highlight declared file/URI targets while dragging files.'));
+    page.append(makeSwitchRow(settings, 'macos-quick-menu', 'Contextual quick menus',
+        'Add recent files and window controls to the native right-click / long-press menu.'));
+    page.append(makeIntScaleRow(settings, 'macos-recent-files-count', 'Recent files',
+        'Maximum compatible recent files shown in the contextual quick menu.', 0, 10, 1,
+        value => `${Math.round(value)}`));
 
     const resetButton = new Gtk.Button({
         label: 'Reset macOS settings to defaults',
