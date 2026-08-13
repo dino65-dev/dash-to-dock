@@ -1,35 +1,75 @@
 ---
-name: Make
+name: Build & Package
+
 'on':
+  workflow_dispatch:
   pull_request:
   push:
     branches:
       - master
       - ubuntu-dock
       - make_ci
+      - feature/macos-fisheye
+
+permissions:
+  contents: read
 
 jobs:
-  make:
-    name: Make
+  build:
+    name: Build GNOME extension
     runs-on: ubuntu-latest
+
     steps:
-      - name: Check out the codebase.
+      - name: Check out the codebase
         uses: actions/checkout@v4
 
-      - name: Install dependencies.
-        run: sudo apt-get install -y sassc gettext
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sassc gettext libglib2.0-bin zip
+          sudo npm install eslint@9.x -g
 
-      - name: Make
+      - name: Clean build tree
+        run: make clean
+
+      - name: Compile extension
         run: make
 
-      - name: Install modules
-        run: sudo npm install eslint@9.x -g
-
-      - name: Make Check
+      - name: Lint JavaScript
         run: make check
 
-      - name: Make Install
-        run: make install
+      - name: Build installable package tree
+        run: make _build
 
-      - name: Generate translations
-        run: make potfile
+      - name: Validate packaged extension
+        run: |
+          test -f _build/metadata.json
+          test -f _build/extension.js
+          test -f _build/macDockEffects.js
+          test -f _build/stylesheet.css
+          test -f _build/schemas/gschemas.compiled
+          python3 -m json.tool _build/metadata.json >/dev/null
+          glib-compile-schemas --strict _build/schemas
+
+      - name: Write build summary
+        run: |
+          {
+            echo '## macOS fish-eye test build'
+            echo ''
+            echo 'Download the **dash-to-dock-macos-test** artifact below.'
+            echo 'The downloaded artifact ZIP is the extension package itself.'
+            echo ''
+            echo 'Install on GNOME with:'
+            echo '```bash'
+            echo 'gnome-extensions install --force ~/Downloads/dash-to-dock-macos-test.zip'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload ready-to-install extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: dash-to-dock-macos-test
+          path: _build/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
