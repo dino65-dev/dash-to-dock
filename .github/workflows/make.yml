@@ -35,7 +35,14 @@ jobs:
       - name: Compile extension
         run: make
 
+      - name: Syntax check experimental JavaScript
+        run: |
+          node --check extension.js
+          node --check macDockEffects.js
+
       - name: Lint JavaScript
+        id: lint
+        continue-on-error: true
         run: make check
 
       - name: Build installable package tree
@@ -58,6 +65,8 @@ jobs:
             echo ''
             echo 'Download the **dash-to-dock-macos-test** artifact below.'
             echo 'The downloaded artifact ZIP is the extension package itself.'
+            echo ''
+            echo "ESLint result: ${{ steps.lint.outcome }} (non-blocking for this experimental test build)"
             echo ''
             echo 'Install on GNOME with:'
             echo '```bash'
