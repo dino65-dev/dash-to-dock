@@ -8,6 +8,7 @@ name: Build & Package
       - master
       - ubuntu-dock
       - make_ci
+      - release/ego-fisheye-dock
 
 permissions:
   contents: read
@@ -24,7 +25,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y sassc gettext libglib2.0-bin zip
+          sudo apt-get install -y sassc gettext libglib2.0-bin zip unzip
           sudo npm install eslint@9.x -g
 
       - name: Clean build tree
@@ -58,25 +59,64 @@ jobs:
           python3 -m json.tool _build/metadata.json >/dev/null
           glib-compile-schemas --strict _build/schemas
 
+      - name: Create extensions.gnome.org upload ZIP
+        if: github.ref == 'refs/heads/release/ego-fisheye-dock'
+        run: |
+          rm -rf _ego
+          cp -a _build _ego
+          rm -f _ego/schemas/gschemas.compiled
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          metadata = json.loads(Path('_ego/metadata.json').read_text())
+          assert metadata['uuid'] == 'fisheye-dock@dino65-dev.github.io'
+          assert metadata['name'] == 'Fisheye Dock'
+          assert metadata['settings-schema'] == 'org.gnome.shell.extensions.dash-to-dock'
+          assert 'version' not in metadata
+          assert metadata['shell-version'] == ['45', '46', '47', '48', '49', '50']
+          PY
+
+          test -f _ego/schemas/org.gnome.shell.extensions.dash-to-dock.gschema.xml
+          test -f _ego/schemas/org.gnome.shell.extensions.dash-to-dock.macos.gschema.xml
+          test ! -e _ego/schemas/gschemas.compiled
+
+          (cd _ego && zip -9qr ../fisheye-dock@dino65-dev.github.io.shell-extension.zip .)
+
+          unzip -t fisheye-dock@dino65-dev.github.io.shell-extension.zip
+          ! unzip -l fisheye-dock@dino65-dev.github.io.shell-extension.zip | grep -q 'gschemas.compiled'
+
       - name: Write build summary
         run: |
           {
-            echo '## Dash to Dock — macOS Native'
+            echo '## Fisheye Dock'
             echo ''
-            echo 'Download the **dash-to-dock-macos-native** artifact below.'
-            echo ''
-            echo '- native high-resolution fish-eye renderer'
-            echo '- frame-clock spring animation and elastic material'
-            echo '- seamless rounded translucent fallback (no rectangular blur artifact)'
-            echo '- optional true rounded dynamic blur when a compatible gi://Blur provider exists'
+            echo '- high-resolution fish-eye magnification'
+            echo '- frame-clock spring animation and elastic rounded material'
+            echo '- seamless translucent fallback without rectangular background blur artifacts'
             echo '- reflections, adaptive appearance, divider and integrated preferences'
+            if [ "$GITHUB_REF" = 'refs/heads/release/ego-fisheye-dock' ]; then
+              echo ''
+              echo 'The **fisheye-dock-ego-upload** artifact contains the ZIP to upload directly to extensions.gnome.org.'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload ready-to-install extension
+      - name: Upload normal test build
         uses: actions/upload-artifact@v4
         with:
-          name: dash-to-dock-macos-native
+          name: fisheye-dock-test-build
           path: _build/
           if-no-files-found: error
           retention-days: 30
           compression-level: 9
+
+      - name: Upload extensions.gnome.org package
+        if: github.ref == 'refs/heads/release/ego-fisheye-dock'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fisheye-dock-ego-upload
+          path: fisheye-dock@dino65-dev.github.io.shell-extension.zip
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
