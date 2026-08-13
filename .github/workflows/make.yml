@@ -11,6 +11,7 @@ name: Build & Package
       - make_ci
       - feature/macos-fisheye
       - feature/macos-material-v108
+      - feature/macos-polish-v109
 
 permissions:
   contents: read
