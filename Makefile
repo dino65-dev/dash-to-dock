@@ -22,6 +22,7 @@ EXTRA_MODULES = \
                 notificationsMonitor.js \
                 windowPreview.js \
                 intellihide.js \
+                macDockEffects.js \
                 prefs.js \
                 theming.js \
                 utils.js \
