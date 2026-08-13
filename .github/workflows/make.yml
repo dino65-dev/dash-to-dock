@@ -36,8 +36,7 @@ jobs:
               global s
               count = s.count(old)
               if count != 1:
-                  raise SystemExit(
-                      f'Expected exactly one match, found {count}: {old[:90]!r}')
+                  raise SystemExit(f'Expected one match, found {count}: {old[:80]!r}')
               s = s.replace(old, new, 1)
 
           replace_once(
@@ -81,8 +80,8 @@ jobs:
               "        // the final autohide position so no rounded border/blur strip remains.\n"
               "        if (!this._items.length || slide <= MATERIAL_HIDDEN_SLIDE) {\n",
               "    _paintMaterial() {\n"
-              "        // Suppress the detached glass only after Dash-to-Dock reaches its\n"
-              "        // actual HIDDEN state. SHOWING/HIDING must continue to paint.\n"
+              "        // Hide the detached glass only at the real final HIDDEN state.\n"
+              "        // SHOWING/HIDING continue painting while slide-x animates.\n"
               "        if (!this._items.length || this._isDockFullyHidden()) {\n")
 
           replace_once(
@@ -93,37 +92,29 @@ jobs:
               "            this._isDockFullyHidden())\n"
               "            return Clutter.EVENT_PROPAGATE;\n")
 
-          anchor = """    _orderedItems() {
-              const horizontal = this._dock.isHorizontal;
-              return [...this._items].sort((a, b) => horizontal
-                  ? a.baseCenterX - b.baseCenterX
-                  : a.baseCenterY - b.baseCenterY);
-          }
+          anchor = (
+              "    _orderedItems() {\n"
+              "        const horizontal = this._dock.isHorizontal;\n"
+              "        return [...this._items].sort((a, b) => horizontal\n"
+              "            ? a.baseCenterX - b.baseCenterX\n"
+              "            : a.baseCenterY - b.baseCenterY);\n"
+              "    }\n\n")
 
-"""
-          helper = """    _orderedItems() {
-              const horizontal = this._dock.isHorizontal;
-              return [...this._items].sort((a, b) => horizontal
-                  ? a.baseCenterX - b.baseCenterX
-                  : a.baseCenterY - b.baseCenterY);
-          }
+          helper = anchor + (
+              "    _isDockTransitioning() {\n"
+              "        const state = this._dock?.getDockState?.();\n"
+              "        // docking.js: SHOWING = 1, HIDING = 3.\n"
+              "        return state === 1 || state === 3;\n"
+              "    }\n\n"
+              "    _isDockFullyHidden() {\n"
+              "        const state = this._dock?.getDockState?.();\n"
+              "        const slide = Math.max(0, Math.min(1,\n"
+              "            this._dock?._slider?.slideX ?? 1));\n"
+              "        // docking.js: HIDDEN = 0. Requiring lifecycle state and final\n"
+              "        // slide position prevents reveal startup from looking hidden.\n"
+              "        return state === 0 && slide <= MATERIAL_HIDDEN_SLIDE;\n"
+              "    }\n\n")
 
-          _isDockTransitioning() {
-              const state = this._dock?.getDockState?.();
-              // docking.js: SHOWING = 1, HIDING = 3.
-              return state === 1 || state === 3;
-          }
-
-          _isDockFullyHidden() {
-              const state = this._dock?.getDockState?.();
-              const slide = Math.max(0, Math.min(1,
-                  this._dock?._slider?.slideX ?? 1));
-              // docking.js: HIDDEN = 0. Require both lifecycle state and final
-              // slide position so reveal startup is never mistaken for hidden.
-              return state === 0 && slide <= MATERIAL_HIDDEN_SLIDE;
-          }
-
-"""
           replace_once(anchor, helper)
           path.write_text(s)
           PY
@@ -169,16 +160,11 @@ jobs:
             echo 'Download the **dash-to-dock-macos-native-v2** artifact below.'
             echo 'The downloaded artifact ZIP is the installable GNOME extension package.'
             echo ''
-            echo 'This build includes the autohide lifecycle fix:'
+            echo 'Autohide fix:'
             echo '- renderer wakes on Dock showing/hiding signals'
-            echo '- renderer stays frame-clock active while slide animation runs'
-            echo '- custom material disappears only at true final hidden state'
-            echo '- edge reveal is no longer blocked by the old 3.5% threshold'
-            echo ''
-            echo 'Install on GNOME with:'
-            echo '```bash'
-            echo 'gnome-extensions install --force ~/Downloads/dash-to-dock-macos-native-v2.zip'
-            echo '```'
+            echo '- frame clock stays active while slide animation runs'
+            echo '- glass disappears only at the true final hidden state'
+            echo '- normal edge reveal is no longer blocked by the 3.5% threshold'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload ready-to-install extension
