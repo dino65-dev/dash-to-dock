@@ -1,10 +1,9 @@
 {
-"shell-version": ["45", "46", "47", "48", "49", "50", "51"],
-"uuid": "dash-to-dock@micxgx.gmail.com",
-"name": "Dash to Dock — macOS Native",
-"description": "Dash to Dock with an optional native macOS-style compositor renderer: high-resolution fish-eye magnification, spring motion, seamless rounded material, reflections, adaptive appearance and structural divider controls.",
-"original-author": "micxgx@gmail.com",
+"shell-version": ["45", "46", "47", "48", "49", "50"],
+"uuid": "fisheye-dock@dino65-dev.github.io",
+"name": "Fisheye Dock",
+"description": "A Dash to Dock fork with high-resolution fish-eye magnification, spring motion, seamless rounded material, reflections, adaptive light/dark appearance and structural divider controls.",
 "url": "https://github.com/dino65-dev/dash-to-dock",
 "gettext-domain": "dashtodock",
-"version": 113
+"settings-schema": "org.gnome.shell.extensions.dash-to-dock"
 }
