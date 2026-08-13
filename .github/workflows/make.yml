@@ -10,6 +10,7 @@ name: Build & Package
       - make_ci
       - feature/macos-interactions-v114
       - feature/macos-thumbnail-fisheye-v115
+      - feature/macos-thumbnail-activation-v116
 
 permissions:
   contents: read
@@ -40,6 +41,7 @@ jobs:
           node --check extension.js
           node --check macDockEffects.js
           node --check macDockInteractions.js
+          node --check macThumbnailFisheyeBase.js
           node --check macThumbnailFisheye.js
           node --check macPrefs.js
           node --check prefs.js
@@ -56,6 +58,7 @@ jobs:
           test -f _build/extension.js
           test -f _build/macDockEffects.js
           test -f _build/macDockInteractions.js
+          test -f _build/macThumbnailFisheyeBase.js
           test -f _build/macThumbnailFisheye.js
           test -f _build/macPrefs.js
           test -f _build/prefs.js
@@ -67,20 +70,20 @@ jobs:
       - name: Write build summary
         run: |
           {
-            echo '## Dash to Dock — macOS Native v115'
+            echo '## Dash to Dock — macOS Native v116'
             echo ''
-            echo 'Download the **dash-to-dock-macos-native-v115-thumbnail-fisheye** artifact below.'
+            echo 'Download the **dash-to-dock-macos-native-v116-thumbnail-activation** artifact below.'
             echo ''
-            echo '- minimized windows participate in configured fish-eye magnification'
-            echo '- same raised-cosine field and damped spring as normal Dock items'
-            echo '- edge-anchored scaling with dynamic tray spacing'
+            echo '- minimized thumbnail activation follows Mutter restore/raise/focus path'
+            echo '- real click timestamp is forwarded to GNOME focus-stealing prevention'
+            echo '- v115 thumbnail fish-eye implementation preserved as an unchanged base module'
             echo '- v114 interactions and v113 renderer remain unchanged'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload ready-to-install extension
         uses: actions/upload-artifact@v4
         with:
-          name: dash-to-dock-macos-native-v115-thumbnail-fisheye
+          name: dash-to-dock-macos-native-v116-thumbnail-activation
           path: _build/
           if-no-files-found: error
           retention-days: 30
