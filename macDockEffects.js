@@ -16,6 +16,7 @@ const OFFSET_EPSILON = 0.08;
 const VELOCITY_EPSILON = 0.02;
 const MATERIAL_MARGIN = 5;
 const MATERIAL_HIDDEN_SLIDE = 0.035;
+const EDGE_REVEAL_TOLERANCE = 2;
 const DOT_SIZE = 4;
 
 /**
@@ -990,9 +991,53 @@ class MacDockRenderer {
         }
     }
 
+    _maybeRevealFromEdge(pointerX, pointerY) {
+        if (!this._isDockFullyHidden() || Main.overview.visibleTarget)
+            return;
+
+        if (!this._dock?._autohideIsEnabled &&
+            !this._dock?._intellihideIsEnabled)
+            return;
+
+        const monitor = this._dock?._monitor;
+        if (!monitor || monitor.inFullscreen)
+            return;
+
+        const left = monitor.x;
+        const right = monitor.x + monitor.width - 1;
+        const top = monitor.y;
+        const bottom = monitor.y + monitor.height - 1;
+        const tolerance = EDGE_REVEAL_TOLERANCE;
+        const insideX = pointerX >= left && pointerX <= right;
+        const insideY = pointerY >= top && pointerY <= bottom;
+        let onEdge = false;
+
+        switch (this._dock.position) {
+        case St.Side.LEFT:
+            onEdge = insideY && pointerX <= left + tolerance;
+            break;
+        case St.Side.RIGHT:
+            onEdge = insideY && pointerX >= right - tolerance;
+            break;
+        case St.Side.TOP:
+            onEdge = insideX && pointerY <= top + tolerance;
+            break;
+        case St.Side.BOTTOM:
+        default:
+            onEdge = insideX && pointerY >= bottom - tolerance;
+            break;
+        }
+
+        if (!onEdge)
+            return;
+
+        this._materialRect = null;
+        this._wake();
+        this._dock._show?.();
+    }
+
     _onCapturedEvent(event) {
-        if (this._destroyed || this._dragging || !event ||
-            this._isDockFullyHidden())
+        if (this._destroyed || this._dragging || !event)
             return Clutter.EVENT_PROPAGATE;
 
         let type;
@@ -1002,7 +1047,15 @@ class MacDockRenderer {
             return Clutter.EVENT_PROPAGATE;
         }
 
-        if (type !== Clutter.EventType.BUTTON_PRESS)
+        // Stage capture sees pointer motion before it reaches windows.
+        if (type === Clutter.EventType.MOTION) {
+            const [x, y] = event.get_coords();
+            this._maybeRevealFromEdge(x, y);
+            return Clutter.EVENT_PROPAGATE;
+        }
+
+        if (this._isDockFullyHidden() ||
+            type !== Clutter.EventType.BUTTON_PRESS)
             return Clutter.EVENT_PROPAGATE;
 
         const [x, y] = event.get_coords();
