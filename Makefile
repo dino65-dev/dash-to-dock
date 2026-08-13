@@ -38,7 +38,7 @@ EXTRA_MEDIA = logo.svg \
               $(NULL)
 
 MSGSRC = $(wildcard po/*.po)
-ifeq ($(strip $(DESTDIR),))
+ifeq ($(strip $(DESTDIR)),)
 	INSTALLTYPE = local
 	INSTALLBASE = $(HOME)/.local/share/gnome-shell/extensions
 else
