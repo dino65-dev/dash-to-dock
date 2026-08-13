@@ -3,32 +3,79 @@
   <schema id="org.gnome.shell.extensions.dash-to-dock.macos" path="/org/gnome/shell/extensions/dash-to-dock/macos/">
     <key type="b" name="macos-style">
       <default>false</default>
-      <summary>Enable macOS-inspired dock effects</summary>
-      <description>Enable rounded floating styling and cursor-distance icon magnification.</description>
+      <summary>Enable native macOS-style dock renderer</summary>
+      <description>Replace the normal Dash-to-Dock presentation with a high-resolution, compositor-animated macOS-style dock while keeping Dash-to-Dock as the application, window, menu, autohide and drag-and-drop backend.</description>
     </key>
+
     <key type="d" name="macos-magnification">
-      <default>0.55</default>
-      <range min="0.0" max="1.0"/>
+      <default>0.85</default>
+      <range min="0.0" max="1.25"/>
       <summary>Magnification strength</summary>
-      <description>Maximum extra icon scale near the pointer. 0.55 means a maximum scale of about 1.55.</description>
+      <description>Maximum extra scale of an icon under the pointer. 0.85 gives a peak scale of 1.85x.</description>
     </key>
     <key type="d" name="macos-magnification-radius">
-      <default>118.0</default>
-      <range min="32.0" max="320.0"/>
+      <default>150.0</default>
+      <range min="48.0" max="360.0"/>
       <summary>Magnification radius</summary>
-      <description>Distance in logical pixels over which the fish-eye wave influences icons.</description>
+      <description>Distance in stage pixels over which the continuous raised-cosine fish-eye wave influences icons.</description>
     </key>
+
+    <key type="d" name="macos-spring-response">
+      <default>26.0</default>
+      <range min="8.0" max="50.0"/>
+      <summary>Spring response</summary>
+      <description>Natural angular response of the frame-clock spring. Higher values follow the pointer more quickly.</description>
+    </key>
+    <key type="d" name="macos-spring-damping">
+      <default>1.0</default>
+      <range min="0.5" max="1.5"/>
+      <summary>Spring damping</summary>
+      <description>Damping ratio of the icon motion spring. 1.0 is critically damped and avoids overshoot.</description>
+    </key>
+
+    <key type="d" name="macos-icon-quality">
+      <default>1.35</default>
+      <range min="1.0" max="2.0"/>
+      <summary>High-resolution icon quality</summary>
+      <description>Multiplier used when pre-creating maximum-resolution icon textures. Textures are created once and then GPU-composited instead of being resized every frame.</description>
+    </key>
+
+    <key type="b" name="macos-glass-blur">
+      <default>true</default>
+      <summary>Enable dock background blur</summary>
+      <description>Use Shell background blur for the small dock material when the running GNOME Shell exposes it.</description>
+    </key>
+    <key type="i" name="macos-glass-radius">
+      <default>24</default>
+      <range min="0" max="64"/>
+      <summary>Glass blur radius</summary>
+      <description>Blur radius of the dock background material.</description>
+    </key>
+    <key type="d" name="macos-glass-opacity">
+      <default>0.62</default>
+      <range min="0.05" max="0.95"/>
+      <summary>Glass opacity</summary>
+      <description>Opacity of the translucent dark dock material.</description>
+    </key>
+    <key type="d" name="macos-corner-radius">
+      <default>18.0</default>
+      <range min="8.0" max="40.0"/>
+      <summary>Dock corner radius</summary>
+      <description>Corner radius of the floating dock material.</description>
+    </key>
+
+    <!-- Kept for compatibility with the first experimental prototype. -->
     <key type="d" name="macos-spread">
       <default>0.42</default>
       <range min="0.0" max="1.5"/>
-      <summary>Neighbor spread</summary>
-      <description>How strongly neighboring icons move away from the magnified icon.</description>
+      <summary>Legacy spread control</summary>
+      <description>Compatibility key from the first prototype. The native renderer now derives spacing directly from icon growth and does not use an arbitrary spread multiplier.</description>
     </key>
     <key type="i" name="macos-animation-duration">
       <default>90</default>
       <range min="0" max="400"/>
-      <summary>Animation duration</summary>
-      <description>Duration in milliseconds for icon scale and position interpolation.</description>
+      <summary>Legacy animation duration</summary>
+      <description>Compatibility key from the first prototype. The native renderer is driven by the compositor frame clock and spring response instead of fixed-duration easing.</description>
     </key>
   </schema>
 </schemalist>
