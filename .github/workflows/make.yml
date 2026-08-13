@@ -1,5 +1,6 @@
 ---
-name: Make
+name: Build & Package
+
 'on':
   pull_request:
   push:
@@ -8,28 +9,74 @@ name: Make
       - ubuntu-dock
       - make_ci
 
+permissions:
+  contents: read
+
 jobs:
-  make:
-    name: Make
+  build:
+    name: Build GNOME extension
     runs-on: ubuntu-latest
+
     steps:
-      - name: Check out the codebase.
+      - name: Check out the codebase
         uses: actions/checkout@v4
 
-      - name: Install dependencies.
-        run: sudo apt-get install -y sassc gettext
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sassc gettext libglib2.0-bin zip
+          sudo npm install eslint@9.x -g
 
-      - name: Make
+      - name: Clean build tree
+        run: make clean
+
+      - name: Compile extension
         run: make
 
-      - name: Install modules
-        run: sudo npm install eslint@9.x -g
+      - name: Syntax check JavaScript
+        run: |
+          node --check extension.js
+          node --check macDockEffects.js
+          node --check macPrefs.js
+          node --check prefs.js
 
-      - name: Make Check
+      - name: Lint JavaScript
         run: make check
 
-      - name: Make Install
-        run: make install
+      - name: Build installable package tree
+        run: make _build
 
-      - name: Generate translations
-        run: make potfile
+      - name: Validate packaged extension
+        run: |
+          test -f _build/metadata.json
+          test -f _build/extension.js
+          test -f _build/macDockEffects.js
+          test -f _build/macPrefs.js
+          test -f _build/prefs.js
+          test -f _build/stylesheet.css
+          test -f _build/schemas/gschemas.compiled
+          python3 -m json.tool _build/metadata.json >/dev/null
+          glib-compile-schemas --strict _build/schemas
+
+      - name: Write build summary
+        run: |
+          {
+            echo '## Dash to Dock — macOS Native'
+            echo ''
+            echo 'Download the **dash-to-dock-macos-native** artifact below.'
+            echo ''
+            echo '- native high-resolution fish-eye renderer'
+            echo '- frame-clock spring animation and elastic material'
+            echo '- seamless rounded translucent fallback (no rectangular blur artifact)'
+            echo '- optional true rounded dynamic blur when a compatible gi://Blur provider exists'
+            echo '- reflections, adaptive appearance, divider and integrated preferences'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload ready-to-install extension
+        uses: actions/upload-artifact@v4
+        with:
+          name: dash-to-dock-macos-native
+          path: _build/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9

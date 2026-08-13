@@ -22,6 +22,8 @@ EXTRA_MODULES = \
                 notificationsMonitor.js \
                 windowPreview.js \
                 intellihide.js \
+                macDockEffects.js \
+                macPrefs.js \
                 prefs.js \
                 theming.js \
                 utils.js \
@@ -67,7 +69,7 @@ clean:
 
 extension: ./schemas/gschemas.compiled ./stylesheet.css $(MSGSRC:.po=.mo)
 
-./schemas/gschemas.compiled: ./schemas/org.gnome.shell.extensions.dash-to-dock.gschema.xml
+./schemas/gschemas.compiled: $(wildcard ./schemas/*.gschema.xml)
 	glib-compile-schemas ./schemas/
 
 potfile: ./po/dashtodock.pot
@@ -127,7 +129,7 @@ _build: all
 	mkdir -p _build/media
 	cd media ; cp $(EXTRA_MEDIA) ../_build/media/
 	mkdir -p _build/schemas
-	cp schemas/*.gschema.xml _build/schemas/
+	cp schemas/*.gschema.xml schemas/gschemas.compiled _build/schemas/
 	mkdir -p _build/locale
 	for l in $(MSGSRC:.po=.mo) ; do \
 		lf=_build/locale/`basename $$l .mo`; \
