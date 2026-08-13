@@ -1,53 +1,129 @@
-# Dash to Dock
+# Dash to Dock — macOS Native
+
 ![screenshot](https://github.com/micheleg/dash-to-dock/raw/master/media/screenshot.jpg)
 
-## A dock for the GNOME Shell
-This extension enhances the dash moving it out of the overview and transforming it in a dock for an easier launching of applications and a faster switching between windows and desktops without having to leave the desktop view.
+## A dock for GNOME Shell
 
-[<img src="https://micheleg.github.io/dash-to-dock/media/get-it-on-ego.png" height="100">](https://extensions.gnome.org/extension/307/dash-to-dock)
+This fork keeps Dash to Dock's application/window backend and adds an optional macOS-inspired native compositor renderer for a smoother, more physical dock presentation.
 
-For additional installation instructions and more information visit [https://micheleg.github.io/dash-to-dock/](https://micheleg.github.io/dash-to-dock/).
+The normal Dash to Dock mode remains available. The macOS renderer is opt-in from the extension preferences.
+
+## macOS Native mode
+
+The macOS mode is designed around GNOME Shell's Clutter/Mutter compositor rather than CSS hover scaling.
+
+### Features
+
+- continuous fish-eye magnification with no discrete nearest-icon snap
+- high-resolution icon textures created near maximum display size
+- frame-clock-driven damped spring motion
+- elastic rounded dock material that grows with icon spreading
+- subtle bottom-dock icon reflections
+- adaptive light/dark material and contrast-aware border
+- persistent separator before locations/folders/Trash
+- native Dash to Dock click, menu, autohide/intellihide and drag-and-drop behavior
+- Blur My Shell Dash background suppression while macOS mode is active
+- dedicated macOS preferences page with magnification, motion, material, reflection and divider controls
+
+### Rendering architecture
+
+Dash to Dock remains responsible for favorites, running applications, windows, menus, autohide/intellihide, monitors and drag-and-drop. `macDockEffects.js` provides the visual layer.
+
+Application icons are rendered in a separate non-reactive Clutter layer using high-resolution textures. The compositor handles icon scale/translation and alpha compositing; JavaScript only updates the small amount of fish-eye/spring state needed per frame.
+
+The fish-eye influence is continuous, and neighboring icons are displaced from their actual additional magnified width rather than an arbitrary spread multiplier. Animation is driven from `Clutter.Timeline`, so it follows Mutter's frame clock instead of starting a new fixed-duration ease on every pointer event.
+
+### Seamless glass behavior
+
+Stock GNOME dynamic `Shell.BlurEffect(BACKGROUND)` paints a rectangular background region on GNOME versions that do not expose rounded blur support. To avoid the faint square/box artifact around a rounded dock, this fork deliberately does **not** use that rectangular blur as a fallback.
+
+- If a compatible `gi://Blur` / `gnome-rounded-blur` provider with a real `corner-radius` property is available, the dock can use true rounded dynamic blur.
+- Otherwise, the dock uses the seamless rounded translucent material with no Gaussian background blur. This keeps the silhouette clean and avoids a rectangular compositor artifact.
+
+The translucent material, adaptive tint and border still work without the optional rounded-blur provider.
+
+## Controls
+
+Open the extension preferences:
+
+```bash
+gnome-extensions prefs dash-to-dock@micxgx.gmail.com
+```
+
+The **macOS** tab exposes:
+
+- enable/disable macOS Native mode
+- peak magnification
+- fish-eye radius
+- spring response and damping
+- high-resolution icon texture quality
+- frosted-glass toggle and blur radius
+- adaptive light/dark material and opacity
+- corner radius
+- dynamic border and contrast
+- reflective shelf opacity/depth
+- structural divider and contrast
+- reset macOS settings
+
+The feature is disabled by default.
+
+## Manual GSettings control
+
+The macOS settings use an extension-local schema. After installation:
+
+```bash
+SCHEMA_DIR="$HOME/.local/share/gnome-shell/extensions/dash-to-dock@micxgx.gmail.com/schemas"
+
+gsettings --schemadir "$SCHEMA_DIR" set \
+  org.gnome.shell.extensions.dash-to-dock.macos macos-style true
+```
+
+Disable it with:
+
+```bash
+gsettings --schemadir "$SCHEMA_DIR" set \
+  org.gnome.shell.extensions.dash-to-dock.macos macos-style false
+```
 
 ## Installation from source
 
-The extension can be installed directly from source, either for the convenience of using git or to test the latest development version. Clone the desired branch with git
+### Build dependencies
 
-### Build Dependencies
+To compile the stylesheet you'll need an implementation of SASS. Dash to Dock supports `dart-sass` (`sass`), `sassc`, and `ruby-sass`. We recommend `dart-sass` or `sassc`.
 
-To compile the stylesheet you'll need an implementation of SASS. Dash to Dock supports `dart-sass` (`sass`), `sassc`, and `ruby-sass`. Every distro should have at least one of these implementations, we recommend using `dart-sass` (`sass`) or `sassc` over `ruby-sass` as `ruby-sass` is deprecated.
-
-By default, Dash to Dock will attempt to build with `sassc`. To change this behavior set the `SASS` environment variable to either `dart` or `ruby`.
+By default, Dash to Dock attempts to build with `sassc`. To select another implementation:
 
 ```bash
 export SASS=dart
-# or...
+# or
 export SASS=ruby
 ```
 
-### Building
-
-Clone the repository or download the branch from github. A simple Makefile is included.
-
-Next use `make` to install the extension into your home directory. A Shell reload is required <kbd>Alt</kbd> + <kbd>F2</kbd> <kbd>r</kbd> <kbd>Enter</kbd> under Xorg or under Wayland you may have to logout and login. The extension has to be enabled  with *gnome-extensions-app* (GNOME Extensions) or with *dconf*.
+### Build and install
 
 ```bash
-git clone https://github.com/micheleg/dash-to-dock.git
+git clone https://github.com/dino65-dev/dash-to-dock.git
 make -C dash-to-dock install
 ```
 
-If `msgfmt` is not available on your system, you will see an error message like the following:
+Under Xorg/X11, reload GNOME Shell with <kbd>Alt</kbd> + <kbd>F2</kbd>, type `r`, and press <kbd>Enter</kbd>. Under Wayland, log out and back in.
+
+Enable the extension with GNOME Extensions or:
 
 ```bash
-make: msgfmt: No such file or directory
+gnome-extensions enable dash-to-dock@micxgx.gmail.com
 ```
 
-In this case install the `gettext` package from your distribution's repository.
+If `msgfmt` is missing, install the `gettext` package from your distribution.
 
+## Validation
 
-## Bug Reporting
+The macOS renderer was iterated against a real GNOME 46 X11 session. CI validates JavaScript syntax, ESLint, schema compilation and the installable package tree.
 
-Bugs should be reported to the Github bug tracker [https://github.com/micheleg/dash-to-dock/issues](https://github.com/micheleg/dash-to-dock/issues).
+## Upstream Dash to Dock
+
+This project is a fork of [Dash to Dock](https://github.com/micheleg/dash-to-dock). For upstream documentation and general Dash to Dock information, visit [micheleg.github.io/dash-to-dock](https://micheleg.github.io/dash-to-dock/).
 
 ## License
-Dash to Dock Gnome Shell extension is distributed under the terms of the GNU General Public License,
-version 2 or later. See the COPYING file for details.
+
+Dash to Dock GNOME Shell extension is distributed under the terms of the GNU General Public License, version 2 or later. See `COPYING` for details.

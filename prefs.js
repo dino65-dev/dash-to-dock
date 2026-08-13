@@ -6,6 +6,8 @@ import Gdk from 'gi://Gdk';
 import Gio from 'gi://Gio';
 import Gtk from 'gi://Gtk';
 
+import {addMacOSPreferencesPage} from './macPrefs.js';
+
 import {
     ExtensionPreferences,
 
@@ -193,6 +195,7 @@ const DockSettings = GObject.registerClass({
         this._builder.add_from_file(`${extensionPreferences.path}/Settings.ui`);
 
         this.widget = this._builder.get_object('settings_notebook');
+        addMacOSPreferencesPage(extensionPreferences, this.widget);
 
         // Set a reasonable initial window height
         this.widget.connect('realize', () => {
