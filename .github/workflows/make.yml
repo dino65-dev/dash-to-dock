@@ -10,6 +10,7 @@ name: Build & Package
       - ubuntu-dock
       - make_ci
       - feature/macos-fisheye
+      - feature/macos-material-v108
 
 permissions:
   contents: read
@@ -39,6 +40,8 @@ jobs:
         run: |
           node --check extension.js
           node --check macDockEffects.js
+          node --check macPrefs.js
+          node --check prefs.js
 
       - name: Lint JavaScript
         run: make check
@@ -51,6 +54,8 @@ jobs:
           test -f _build/metadata.json
           test -f _build/extension.js
           test -f _build/macDockEffects.js
+          test -f _build/macPrefs.js
+          test -f _build/prefs.js
           test -f _build/stylesheet.css
           test -f _build/schemas/gschemas.compiled
           python3 -m json.tool _build/metadata.json >/dev/null
@@ -59,20 +64,23 @@ jobs:
       - name: Write build summary
         run: |
           {
-            echo '## Native macOS dock renderer v2.3 — reliable X11 edge reveal'
+            echo '## macOS Native Dock v108 — material and shelf test'
             echo ''
-            echo 'Download **dash-to-dock-macos-native-v2.3-edge-reveal** below.'
+            echo 'Download **dash-to-dock-macos-native-v108-material** below.'
             echo ''
-            echo '- event-driven Clutter Stage edge detection'
-            echo '- native Dash-to-Dock show/hide state machine remains authoritative'
-            echo '- no polling timer'
-            echo '- keeps elastic glass and GPU fish-eye renderer'
+            echo '- pure rounded shell: rectangular box shadow removed'
+            echo '- inset compositor frosted-glass blur core'
+            echo '- adaptive light/dark tint and contrast border'
+            echo '- bottom-dock icon reflections via Clutter.Clone'
+            echo '- structural location / folder / Trash divider'
+            echo '- dedicated macOS controls in Dash-to-Dock preferences'
+            echo '- v107 working branch remains untouched'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload ready-to-install extension
         uses: actions/upload-artifact@v4
         with:
-          name: dash-to-dock-macos-native-v2.3-edge-reveal
+          name: dash-to-dock-macos-native-v108-material
           path: _build/
           if-no-files-found: error
           retention-days: 30
