@@ -1,6 +1,7 @@
 // -*- mode: js; js-indent-level: 4; indent-tabs-mode: nil -*-
 
 import {DockManager} from './docking.js';
+import {MacDockEffects} from './macDockEffects.js';
 import {Extension} from './dependencies/shell/extensions/extension.js';
 
 // We export this so it can be accessed by other extensions
@@ -12,11 +13,14 @@ export default class DashToDockExtension extends Extension.Extension {
         // See: https://gitlab.gnome.org/GNOME/gnome-shell/-/merge_requests/4214
         this._shutdownID = global.connect('shutdown', () => this.disable());
         dockManager = new DockManager(this);
+        this._macDockEffects = new MacDockEffects(dockManager);
     }
 
     disable() {
         global.disconnect(this._shutdownID);
         delete this._shutdownID;
+        this._macDockEffects?.destroy();
+        this._macDockEffects = null;
         dockManager?.destroy();
         dockManager = null;
     }
