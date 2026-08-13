@@ -20,18 +20,35 @@ The macOS mode is designed around GNOME Shell's Clutter/Mutter compositor rather
 - elastic rounded dock material that grows with icon spreading
 - subtle bottom-dock icon reflections
 - adaptive light/dark material and contrast-aware border
-- persistent separator before locations/folders/Trash
-- native Dash to Dock click, menu, autohide/intellihide and drag-and-drop behavior
+- persistent separator before minimized-window previews, locations/folders/Trash
+- continuous launch bounce until an application's main window appears
+- slower persistent alert bounce when a background app requires attention
+- live miniature previews for minimized windows in a tray after the divider
+- file-drag dim/highlight feedback for applications that declare file or URI support
+- contextual right-click/long-press menus with recent files and window controls
+- native desktop-file app actions, Dash to Dock click behavior, autohide/intellihide and DND backend
 - Blur My Shell Dash background suppression while macOS mode is active
-- dedicated macOS preferences page with magnification, motion, material, reflection and divider controls
+- dedicated macOS preferences page for visual and interaction controls
 
 ### Rendering architecture
 
-Dash to Dock remains responsible for favorites, running applications, windows, menus, autohide/intellihide, monitors and drag-and-drop. `macDockEffects.js` provides the visual layer.
+Dash to Dock remains responsible for favorites, running applications, windows, menus, autohide/intellihide, monitors and drag-and-drop. `macDockEffects.js` provides the known-good visual layer, while `macDockInteractions.js` adds interaction-only behavior around that renderer.
 
 Application icons are rendered in a separate non-reactive Clutter layer using high-resolution textures. The compositor handles icon scale/translation and alpha compositing; JavaScript only updates the small amount of fish-eye/spring state needed per frame.
 
 The fish-eye influence is continuous, and neighboring icons are displaced from their actual additional magnified width rather than an arbitrary spread multiplier. Animation is driven from `Clutter.Timeline`, so it follows Mutter's frame clock instead of starting a new fixed-duration ease on every pointer event.
+
+### Interaction behavior
+
+**Launch bounce** watches the application's Shell state and window list. A launch can start the bounce immediately from the Dock click, and the bounce stops when a normal/dialog main window becomes available. A safety timeout prevents a failed launch from bouncing forever.
+
+**Alert bounce** uses Dash to Dock's existing urgency tracking. The bounce is deliberately slower and persists while an unfocused application has an urgent or demands-attention window.
+
+**Minimized-window trays** use live `Clutter.Clone` previews of Mutter's compositor window actors, the same underlying technique already used by Dash to Dock's window previews. Clicking a tray thumbnail restores and activates that window. The tray is inserted after normal apps and before location/Trash items, with the divider placed immediately before the tray.
+
+**File-drag highlights** monitor GNOME Shell's external Xdnd path. GNOME exposes the drag position and target chain to Shell, but not a reliable per-file URI/MIME payload at this layer, so the Dock does not pretend to know exact per-file compatibility. Instead it highlights applications whose `GAppInfo` declares general file or URI support and dims applications that do not.
+
+**Contextual quick menus** extend the existing native Dash to Dock right-click/long-press menu rather than replacing it. Existing app-specific desktop actions remain intact. The extension adds a Window Controls submenu and compatible recent files read from the desktop recent-files database.
 
 ### Seamless glass behavior
 
@@ -63,9 +80,15 @@ The **macOS** tab exposes:
 - dynamic border and contrast
 - reflective shelf opacity/depth
 - structural divider and contrast
+- bounce on launch
+- alert bouncing
+- minimized-window thumbnail tray
+- drag-and-drop compatibility highlights
+- contextual quick menus
+- recent-file menu count
 - reset macOS settings
 
-The feature is disabled by default.
+The feature is disabled by default; the individual interaction behaviors default to enabled once macOS Native mode is active.
 
 ## Manual GSettings control
 
@@ -118,7 +141,7 @@ If `msgfmt` is missing, install the `gettext` package from your distribution.
 
 ## Validation
 
-The macOS renderer was iterated against a real GNOME 46 X11 session. CI validates JavaScript syntax, ESLint, schema compilation and the installable package tree.
+The macOS renderer was iterated against a real GNOME 46 X11 session. CI validates the renderer and interaction JavaScript syntax, ESLint, schema compilation and the installable package tree.
 
 ## Upstream Dash to Dock
 

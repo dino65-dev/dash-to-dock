@@ -23,6 +23,7 @@ EXTRA_MODULES = \
                 windowPreview.js \
                 intellihide.js \
                 macDockEffects.js \
+                macDockInteractions.js \
                 macPrefs.js \
                 prefs.js \
                 theming.js \

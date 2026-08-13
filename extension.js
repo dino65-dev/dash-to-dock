@@ -4,6 +4,7 @@ import {St} from './dependencies/gi.js';
 
 import {DockManager} from './docking.js';
 import {MacDockEffects} from './macDockEffects.js';
+import {MacDockInteractions} from './macDockInteractions.js';
 import {Extension} from './dependencies/shell/extensions/extension.js';
 
 const MACOS_SCHEMA = 'org.gnome.shell.extensions.dash-to-dock.macos';
@@ -309,12 +310,16 @@ export default class DashToDockExtension extends Extension.Extension {
         this._macDockEffects = new MacDockEffects(dockManager, this);
         this._macRoundedBlur = new MacRoundedBlurCompat(
             this._macDockEffects, dockManager);
+        this._macDockInteractions = new MacDockInteractions(
+            this._macDockEffects, dockManager, this);
     }
 
     disable() {
         global.disconnect(this._shutdownID);
         delete this._shutdownID;
 
+        this._macDockInteractions?.destroy();
+        this._macDockInteractions = null;
         this._macRoundedBlur?.destroy();
         this._macRoundedBlur = null;
         this._macDockEffects?.destroy();
