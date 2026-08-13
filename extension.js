@@ -1,10 +1,6 @@
 // -*- mode: js; js-indent-level: 4; indent-tabs-mode: nil -*-
 
-import {
-    Cogl,
-    GObject,
-    Shell,
-} from './dependencies/gi.js';
+import {St} from './dependencies/gi.js';
 
 import {DockManager} from './docking.js';
 import {MacDockEffects} from './macDockEffects.js';
@@ -12,86 +8,23 @@ import {Extension} from './dependencies/shell/extensions/extension.js';
 
 const MACOS_SCHEMA = 'org.gnome.shell.extensions.dash-to-dock.macos';
 const BMS_BACKGROUND_NAME = 'bms-dash-backgroundgroup';
-const ROUNDED_MASK_NAME = 'macos-dock-rounded-blur-mask';
+const BLUR_EFFECT_NAME = 'macos-dock-blur';
+
+let RoundedBlur = null;
+try {
+    RoundedBlur = await import('gi://Blur');
+} catch {
+    // gnome-rounded-blur is optional. Without it we deliberately use the
+    // clean translucent material instead of GNOME's rectangular dynamic blur.
+}
+
+const HAS_ROUNDED_BLUR = Boolean(
+    RoundedBlur?.BlurEffect?.list_properties?.()
+        .some(property => property.name === 'corner-radius')
+);
 
 // We export this so it can be accessed by other extensions
 export let dockManager;
-
-/**
- * GPU fragment mask applied after Shell.BlurEffect.
- *
- * Shell's BACKGROUND blur is rectangular. This effect clips the already
- * blurred offscreen texture with an antialiased rounded-rectangle SDF so the
- * blur and the visible dock material have exactly the same silhouette.
- */
-const RoundedBlurMaskEffect = GObject.registerClass(
-class RoundedBlurMaskEffect extends Shell.GLSLEffect {
-    _init(cornerRadius) {
-        this._cornerRadius = Math.max(0, cornerRadius);
-        super._init();
-
-        this._uTextureSize = this.get_uniform_location('uTextureSize');
-        this._uBounds = this.get_uniform_location('uBounds');
-        this._uRadius = this.get_uniform_location('uRadius');
-    }
-
-    vfunc_build_pipeline() {
-        const hook = Cogl.SnippetHook?.FRAGMENT ?? Shell.SnippetHook?.FRAGMENT;
-        if (hook === undefined)
-            throw new Error('Fragment shader snippets are unavailable');
-
-        this.add_glsl_snippet(
-            hook,
-            'uniform vec2 uTextureSize;\n' +
-            'uniform vec4 uBounds;\n' +
-            'uniform float uRadius;\n',
-            'vec2 p = cogl_tex_coord0_in.xy * uTextureSize;\n' +
-            'vec2 center = 0.5 * (uBounds.xy + uBounds.zw);\n' +
-            'vec2 halfSize = 0.5 * (uBounds.zw - uBounds.xy);\n' +
-            'float radius = min(uRadius, min(halfSize.x, halfSize.y));\n' +
-            'vec2 q = abs(p - center) - max(halfSize - vec2(radius), vec2(0.0));\n' +
-            'float distance = length(max(q, vec2(0.0))) + ' +
-                'min(max(q.x, q.y), 0.0) - radius;\n' +
-            'float coverage = 1.0 - smoothstep(-1.0, 1.0, distance);\n' +
-            'cogl_color_out *= coverage;\n',
-            false
-        );
-    }
-
-    vfunc_paint_target(...params) {
-        const texture = this.get_texture();
-        const actor = this.get_actor();
-
-        if (texture && actor) {
-            const textureWidth = Math.max(1, texture.get_width());
-            const textureHeight = Math.max(1, texture.get_height());
-            const resourceScale = Math.max(1, actor.get_resource_scale?.() ?? 1);
-            const actorWidth = Math.max(1, actor.width * resourceScale);
-            const actorHeight = Math.max(1, actor.height * resourceScale);
-
-            // Clutter offscreen effects pad their texture around the actor's
-            // paint box. The dock blur actor has no children, so centering its
-            // allocation inside that texture gives the correct rounded bounds.
-            const x1 = Math.max(0, (textureWidth - actorWidth) / 2);
-            const y1 = Math.max(0, (textureHeight - actorHeight) / 2);
-            const x2 = Math.min(textureWidth, x1 + actorWidth);
-            const y2 = Math.min(textureHeight, y1 + actorHeight);
-            const radius = Math.min(
-                this._cornerRadius * resourceScale,
-                (x2 - x1) / 2,
-                (y2 - y1) / 2
-            );
-
-            this.set_uniform_float(
-                this._uTextureSize, 2, [textureWidth, textureHeight]);
-            this.set_uniform_float(
-                this._uBounds, 4, [x1, y1, x2, y2]);
-            this.set_uniform_float(this._uRadius, 1, [radius]);
-        }
-
-        super.vfunc_paint_target(...params);
-    }
-});
 
 class MacExternalCompat {
     constructor(manager, extension) {
@@ -207,18 +140,25 @@ class MacExternalCompat {
 }
 
 /**
- * Keeps the native blur aligned with the rounded material and reapplies the
- * mask whenever MacDockRenderer rebuilds its effect chain.
+ * Uses true rounded dynamic blur only when gnome-rounded-blur is available.
+ *
+ * GNOME 46's Shell.BlurEffect paints BACKGROUND blur as a rectangle and has no
+ * corner-radius property. Trying to cover that with CSS or another effect leaves
+ * a faint rectangular paint region. The clean fallback therefore removes that
+ * effect completely and relies on the already-rounded translucent material.
  */
-class MacRoundedBlur {
+class MacRoundedBlurCompat {
     constructor(macEffects, manager) {
         this._macEffects = macEffects;
         this._dockManager = manager;
         this._settings = macEffects._settings;
         this._states = new Map();
+        this._themeContext = St.ThemeContext.get_for_stage(global.stage);
 
         this._docksReadyId = manager.connect('docks-ready', () => this._sync());
         this._settingsChangedId = this._settings.connect('changed', () => this._sync());
+        this._scaleChangedId = this._themeContext.connect(
+            'notify::scale-factor', () => this._sync());
         this._sync();
     }
 
@@ -230,11 +170,14 @@ class MacRoundedBlur {
             this._dockManager?.disconnect(this._docksReadyId);
         if (this._settingsChangedId)
             this._settings?.disconnect(this._settingsChangedId);
+        if (this._scaleChangedId)
+            this._themeContext?.disconnect(this._scaleChangedId);
 
         for (const renderer of [...this._states.keys()])
             this._detach(renderer);
 
         this._states.clear();
+        this._themeContext = null;
         this._settings = null;
         this._dockManager = null;
         this._macEffects = null;
@@ -244,7 +187,7 @@ class MacRoundedBlur {
         if (!this._macEffects || !this._settings)
             return;
 
-        const renderers = [...(this._macEffects._renderers?.values?.() ?? [])];
+        const renderers = [...this._macEffects._renderers.values()];
 
         for (const renderer of [...this._states.keys()]) {
             if (!renderers.includes(renderer))
@@ -265,18 +208,18 @@ class MacRoundedBlur {
             colorSchemeId: 0,
         };
 
-        // Native Shell blur has no rounded shape. Let it fill the *same* box as
-        // the rounded material; the shader below then provides the silhouette.
         renderer._layoutBlurCore = rect => {
             const core = renderer._blurCore;
-            if (!core)
-                return;
+            const enabled = HAS_ROUNDED_BLUR &&
+                this._settings?.get_boolean('macos-glass-blur');
 
-            if (!this._settings?.get_boolean('macos-glass-blur')) {
-                core.hide();
+            if (!core || !enabled) {
+                core?.hide();
                 return;
             }
 
+            // The patched native effect clips its own background capture to
+            // corner-radius, so it can safely use the exact material bounds.
             core.set_position(rect.x, rect.y);
             core.set_size(rect.width, rect.height);
             core.show();
@@ -306,9 +249,9 @@ class MacRoundedBlur {
         }
 
         try {
-            renderer._blurCore?.remove_effect_by_name?.(ROUNDED_MASK_NAME);
-            if (renderer._layoutBlurCore)
-                renderer._layoutBlurCore = state.originalLayoutBlurCore;
+            renderer._blurCore?.clear_effects?.();
+            renderer._blurCore?.hide();
+            renderer._layoutBlurCore = state.originalLayoutBlurCore;
         } catch {
             // Renderer actors may already be gone during a dock rebuild.
         }
@@ -321,28 +264,38 @@ class MacRoundedBlur {
         if (!core || !this._settings)
             return;
 
-        core.remove_effect_by_name?.(ROUNDED_MASK_NAME);
+        // Remove both the stock rectangular Shell.BlurEffect created by the
+        // renderer and any previous rounded effect before deciding what to use.
+        core.clear_effects?.();
+        core.set_style('background-color: transparent;');
 
-        if (!this._settings.get_boolean('macos-glass-blur'))
-            return;
-
-        // Renderer._configureBlur() adds this first. Our mask must be the next
-        // effect so it operates on the already-blurred offscreen texture.
-        if (!core.get_effect?.('macos-dock-blur'))
-            return;
-
-        try {
-            const mask = new RoundedBlurMaskEffect(
-                this._settings.get_double('macos-corner-radius'));
-            core.add_effect_with_name(ROUNDED_MASK_NAME, mask);
+        if (!HAS_ROUNDED_BLUR ||
+            !this._settings.get_boolean('macos-glass-blur')) {
+            core.hide();
             renderer._materialRect = null;
             renderer._wake?.();
+            return;
+        }
+
+        try {
+            const scale = Math.max(1, this._themeContext?.scale_factor ?? 1);
+            const blur = new RoundedBlur.BlurEffect({
+                mode: RoundedBlur.BlurMode.BACKGROUND,
+                radius: Math.max(0,
+                    this._settings.get_int('macos-glass-radius') * scale),
+                brightness: renderer._isDarkMode?.() ? 0.88 : 1.02,
+            });
+            blur.corner_radius = Math.max(0,
+                this._settings.get_double('macos-corner-radius') * scale);
+            core.add_effect_with_name(BLUR_EFFECT_NAME, blur);
         } catch {
-            // Never regress to a visible rectangular blur. The rounded tinted
-            // material still works perfectly without the blur pass.
-            core.remove_effect_by_name?.('macos-dock-blur');
+            // A broken/mismatched helper must never bring the square back.
+            core.clear_effects?.();
             core.hide();
         }
+
+        renderer._materialRect = null;
+        renderer._wake?.();
     }
 }
 
@@ -354,7 +307,8 @@ export default class DashToDockExtension extends Extension.Extension {
         dockManager = new DockManager(this);
         this._macExternalCompat = new MacExternalCompat(dockManager, this);
         this._macDockEffects = new MacDockEffects(dockManager, this);
-        this._macRoundedBlur = new MacRoundedBlur(this._macDockEffects, dockManager);
+        this._macRoundedBlur = new MacRoundedBlurCompat(
+            this._macDockEffects, dockManager);
     }
 
     disable() {
