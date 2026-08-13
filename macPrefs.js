@@ -44,14 +44,18 @@ export function addMacOSPreferencesPage(extensionPreferences, notebook) {
         vexpand: true,
         hscrollbar_policy: Gtk.PolicyType.NEVER,
         vscrollbar_policy: Gtk.PolicyType.AUTOMATIC,
+        kinetic_scrolling: true,
+        overlay_scrolling: false,
+        propagate_natural_height: false,
+        min_content_height: 420,
     });
     const content = new Gtk.Box({
         orientation: Gtk.Orientation.VERTICAL,
-        spacing: 18,
-        margin_start: 18,
-        margin_end: 18,
-        margin_top: 18,
-        margin_bottom: 24,
+        spacing: 12,
+        margin_start: 14,
+        margin_end: 10,
+        margin_top: 14,
+        margin_bottom: 18,
     });
 
     page.set_child(content);
@@ -182,7 +186,7 @@ function makeSectionLabel(text) {
         label: `<b>${text}</b>`,
         use_markup: true,
         xalign: 0,
-        margin_top: 6,
+        margin_top: 4,
     });
     label.add_css_class('title-3');
     return label;
@@ -213,7 +217,7 @@ function makeIntScaleRow(settings, key, title, subtitle, min, max, step, formatt
 function makeScaleRow(settings, key, title, subtitle, min, max, step, formatter, integer) {
     const wrapper = new Gtk.Box({
         orientation: Gtk.Orientation.VERTICAL,
-        spacing: 6,
+        spacing: 5,
     });
     const header = makeRow(title, subtitle);
     const valueLabel = new Gtk.Label({
@@ -227,6 +231,7 @@ function makeScaleRow(settings, key, title, subtitle, min, max, step, formatter,
     scale.set_hexpand(true);
     scale.set_draw_value(false);
     scale.set_value(integer ? settings.get_int(key) : settings.get_double(key));
+    installPageWheelScroll(scale);
 
     const updateLabel = () => valueLabel.set_label(formatter(scale.get_value()));
     updateLabel();
@@ -250,10 +255,39 @@ function makeScaleRow(settings, key, title, subtitle, min, max, step, formatter,
     return wrapper;
 }
 
+function installPageWheelScroll(scale) {
+    const controller = Gtk.EventControllerScroll.new(
+        Gtk.EventControllerScrollFlags.VERTICAL);
+    controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE);
+    controller.connect('scroll', (_controller, _dx, dy) => {
+        if (!dy)
+            return false;
+
+        let parent = scale.get_parent();
+        while (parent && typeof parent.get_vadjustment !== 'function')
+            parent = parent.get_parent();
+
+        if (!parent)
+            return false;
+
+        const adjustment = parent.get_vadjustment();
+        const lower = adjustment.get_lower();
+        const upper = adjustment.get_upper();
+        const pageSize = adjustment.get_page_size();
+        const step = Math.max(34, adjustment.get_step_increment());
+        const maximum = Math.max(lower, upper - pageSize);
+        const value = Math.max(lower, Math.min(maximum,
+            adjustment.get_value() + dy * step * 1.8));
+        adjustment.set_value(value);
+        return true;
+    });
+    scale.add_controller(controller);
+}
+
 function makeRow(title, subtitle) {
     const row = new Gtk.Box({
         orientation: Gtk.Orientation.HORIZONTAL,
-        spacing: 18,
+        spacing: 12,
     });
     const labels = new Gtk.Box({
         orientation: Gtk.Orientation.VERTICAL,
@@ -269,6 +303,7 @@ function makeRow(title, subtitle) {
         label: subtitle,
         xalign: 0,
         wrap: true,
+        max_width_chars: 56,
     });
 
     subtitleLabel.add_css_class('dim-label');
