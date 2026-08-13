@@ -66,21 +66,127 @@ jobs:
           cp -a _build _ego
           rm -f _ego/schemas/gschemas.compiled
 
+          # The upstream Dash-to-Dock codebase predates some of Shexli's
+          # lifecycle heuristics. Apply only review-safe modernizations to the
+          # EGO package; keep behavior-identical upstream mechanisms (notably
+          # GObject vfunc injection and the standalone locations worker) intact.
           python3 - <<'PY'
           import json
           from pathlib import Path
 
-          metadata = json.loads(Path('_ego/metadata.json').read_text())
+          def replace(path, old, new):
+              file = Path(path)
+              text = file.read_text()
+              if old not in text:
+                  raise RuntimeError(f'Expected block not found in {path}')
+              file.write_text(text.replace(old, new))
+
+          metadata_path = Path('_ego/metadata.json')
+          metadata = json.loads(metadata_path.read_text())
           assert metadata['uuid'] == 'fisheye-dock@dino65-dev.github.io'
           assert metadata['name'] == 'Fisheye Dock'
           assert metadata['settings-schema'] == 'org.gnome.shell.extensions.dash-to-dock'
           assert 'version' not in metadata
           assert metadata['shell-version'] == ['45', '46', '47', '48', '49', '50']
+
+          # EGO-L-001: do not create the WindowTracker singleton at module load.
+          replace('_ego/appIcons.js',
+              "const tracker = Shell.WindowTracker.get_default();\n",
+              "function getWindowTracker() {\n"
+              "    return Shell.WindowTracker.get_default();\n"
+              "}\n")
+          app_icons = Path('_ego/appIcons.js')
+          text = app_icons.read_text()
+          text = text.replace('tracker.get_window_app(window)',
+                              'getWindowTracker().get_window_app(window)')
+          text = text.replace('tracker.focus_app',
+                              'getWindowTracker().focus_app')
+          text = text.replace("this._signalsHandler.add(tracker, 'notify::focus-app'",
+                              "this._signalsHandler.add(getWindowTracker(), 'notify::focus-app'")
+          app_icons.write_text(text)
+
+          # EGO-L-005: release owned references explicitly after cleanup.
+          replace('_ego/appIconIndicators.js',
+              "        this._area.destroy();\n        delete this._area;\n",
+              "        this._area.destroy();\n        this._area = null;\n")
+          replace('_ego/docking.js',
+              "        delete this._staticBox;\n",
+              "        this._staticBox = null;\n")
+
+          # Supported Shell versions all provide new_for_actor().  Removing the
+          # legacy constructor fallback avoids an unnecessary owned Timeline
+          # path while preserving the same frame-clock animation.
+          replace('_ego/macDockEffects.js',
+              "        try {\n"
+              "            this._timeline = Clutter.Timeline.new_for_actor(this._layer, 1000);\n"
+              "        } catch {\n"
+              "            this._timeline = new Clutter.Timeline({\n"
+              "                actor: this._layer,\n"
+              "                duration: 1000,\n"
+              "            });\n"
+              "        }\n",
+              "        this._timeline = Clutter.Timeline.new_for_actor(this._layer, 1000);\n")
+
+          # GNOME 45+ prefers fillPreferencesWindow().  Reproduce Shell's
+          # generic widget wrapping explicitly so the existing notebook and the
+          # corrected macOS/Fisheye scrolling behavior stay unchanged.
+          prefs = Path('_ego/prefs.js')
+          text = prefs.read_text()
+          text = text.replace("import GLib from 'gi://GLib';\n",
+                              "import Adw from 'gi://Adw';\nimport GLib from 'gi://GLib';\n", 1)
+          old = (
+              "export default class DockPreferences extends ExtensionPreferences {\n"
+              "    getPreferencesWidget() {\n"
+              "        const settings = new DockSettings(this);\n"
+              "        const {widget} = settings;\n"
+              "        return widget;\n"
+              "    }\n"
+              "}\n"
+          )
+          new = (
+              "export default class DockPreferences extends ExtensionPreferences {\n"
+              "    fillPreferencesWindow(window) {\n"
+              "        const settings = new DockSettings(this);\n"
+              "        const {widget} = settings;\n\n"
+              "        const page = new Adw.PreferencesPage();\n"
+              "        const group = new Adw.PreferencesGroup();\n"
+              "        group.add(widget);\n"
+              "        page.add(group);\n"
+              "        window.add(page);\n\n"
+              "        // Keep the controller alive only for this preferences window.\n"
+              "        window._dockSettings = settings;\n"
+              "        window.connect('close-request', () => {\n"
+              "            window._dockSettings = null;\n"
+              "        });\n"
+              "    }\n"
+              "}\n"
+          )
+          if old not in text:
+              raise RuntimeError('Expected getPreferencesWidget block not found')
+          prefs.write_text(text.replace(old, new))
           PY
 
           test -f _ego/schemas/org.gnome.shell.extensions.dash-to-dock.gschema.xml
           test -f _ego/schemas/org.gnome.shell.extensions.dash-to-dock.macos.gschema.xml
           test ! -e _ego/schemas/gschemas.compiled
+
+          # Validate the exact JavaScript that reviewers/users will receive.
+          node --check _ego/appIcons.js
+          node --check _ego/appIconIndicators.js
+          node --check _ego/docking.js
+          node --check _ego/macDockEffects.js
+          node --check _ego/prefs.js
+          eslint --no-ignore _ego/appIcons.js _ego/appIconIndicators.js \
+            _ego/docking.js _ego/macDockEffects.js _ego/prefs.js
+          glib-compile-schemas --strict _ego/schemas
+          rm -f _ego/schemas/gschemas.compiled
+
+          # Assertions for the specific Shexli issues modernized above.
+          ! grep -q "const tracker = Shell.WindowTracker.get_default" _ego/appIcons.js
+          ! grep -q "getPreferencesWidget()" _ego/prefs.js
+          ! grep -q "new Clutter.Timeline" _ego/macDockEffects.js
+          grep -q "this._area = null" _ego/appIconIndicators.js
+          grep -q "this._staticBox = null" _ego/docking.js
 
           (cd _ego && zip -9qr ../fisheye-dock@dino65-dev.github.io.shell-extension.zip .)
 
@@ -99,6 +205,7 @@ jobs:
             if [ "$GITHUB_REF" = 'refs/heads/release/ego-fisheye-dock' ]; then
               echo ''
               echo 'The **fisheye-dock-ego-upload** artifact contains the ZIP to upload directly to extensions.gnome.org.'
+              echo 'The EGO package also applies review-safe lifecycle/preferences modernizations.'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
