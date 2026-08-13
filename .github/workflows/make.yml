@@ -13,6 +13,7 @@ name: Build & Package
       - feature/macos-material-v108
       - feature/macos-polish-v109
       - feature/macos-polish-v110
+      - feature/macos-polish-v111
 
 permissions:
   contents: read
