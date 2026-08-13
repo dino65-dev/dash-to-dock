@@ -38,7 +38,7 @@ EXTRA_MEDIA = logo.svg \
               $(NULL)
 
 MSGSRC = $(wildcard po/*.po)
-ifeq ($(strip $(DESTDIR)),)
+ifeq ($(strip $(DESTDIR),))
 	INSTALLTYPE = local
 	INSTALLBASE = $(HOME)/.local/share/gnome-shell/extensions
 else
@@ -68,7 +68,7 @@ clean:
 
 extension: ./schemas/gschemas.compiled ./stylesheet.css $(MSGSRC:.po=.mo)
 
-./schemas/gschemas.compiled: ./schemas/org.gnome.shell.extensions.dash-to-dock.gschema.xml
+./schemas/gschemas.compiled: $(wildcard ./schemas/*.gschema.xml)
 	glib-compile-schemas ./schemas/
 
 potfile: ./po/dashtodock.pot
