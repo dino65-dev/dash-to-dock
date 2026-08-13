@@ -23,102 +23,6 @@ jobs:
       - name: Check out the codebase
         uses: actions/checkout@v4
 
-      - name: Apply autohide renderer lifecycle hotfix
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('macDockEffects.js')
-          s = path.read_text()
-
-          def replace_once(old, new):
-              global s
-              count = s.count(old)
-              if count != 1:
-                  raise SystemExit(f'Expected one match, found {count}: {old[:80]!r}')
-              s = s.replace(old, new, 1)
-
-          replace_once(
-              "        this._connect(this._dock._slider, 'notify::slide-x', () => this._wake());\n",
-              "        this._connect(this._dock._slider, 'notify::slide-x', () => this._wake());\n"
-              "        this._connect(this._dock, 'showing', () => {\n"
-              "            this._materialRect = null;\n"
-              "            this._wake();\n"
-              "        });\n"
-              "        this._connect(this._dock, 'hiding', () => this._wake());\n")
-
-          replace_once(
-              "        if (active || moving) {\n",
-              "        const dockTransitioning = this._isDockTransitioning();\n\n"
-              "        if (active || moving || dockTransitioning) {\n")
-
-          replace_once(
-              "    _pointerInActivationZone(pointerX, pointerY) {\n"
-              "        if (!this._items.length ||\n"
-              "            (this._dock._slider?.slideX ?? 1) <= MATERIAL_HIDDEN_SLIDE)\n"
-              "            return false;\n",
-              "    _pointerInActivationZone(pointerX, pointerY) {\n"
-              "        if (!this._items.length || this._isDockFullyHidden())\n"
-              "            return false;\n")
-
-          replace_once(
-              "        const horizontal = this._dock.isHorizontal;\n"
-              "        const hidden =\n"
-              "            (this._dock._slider?.slideX ?? 1) <= MATERIAL_HIDDEN_SLIDE;\n\n"
-              "        for (const item of this._items) {\n",
-              "        const horizontal = this._dock.isHorizontal;\n"
-              "        const hidden = this._isDockFullyHidden();\n\n"
-              "        for (const item of this._items) {\n")
-
-          replace_once(
-              "    _paintMaterial() {\n"
-              "        const slide = Math.max(0, Math.min(1,\n"
-              "            this._dock._slider?.slideX ?? 1));\n\n"
-              "        // DashSlideContainer can leave a few material pixels on-screen because\n"
-              "        // our glass actor intentionally has extra margin. Hide it completely at\n"
-              "        // the final autohide position so no rounded border/blur strip remains.\n"
-              "        if (!this._items.length || slide <= MATERIAL_HIDDEN_SLIDE) {\n",
-              "    _paintMaterial() {\n"
-              "        // Hide the detached glass only at the real final HIDDEN state.\n"
-              "        // SHOWING/HIDING continue painting while slide-x animates.\n"
-              "        if (!this._items.length || this._isDockFullyHidden()) {\n")
-
-          replace_once(
-              "        if (this._destroyed || this._dragging || !event ||\n"
-              "            (this._dock._slider?.slideX ?? 1) <= MATERIAL_HIDDEN_SLIDE)\n"
-              "            return Clutter.EVENT_PROPAGATE;\n",
-              "        if (this._destroyed || this._dragging || !event ||\n"
-              "            this._isDockFullyHidden())\n"
-              "            return Clutter.EVENT_PROPAGATE;\n")
-
-          anchor = (
-              "    _orderedItems() {\n"
-              "        const horizontal = this._dock.isHorizontal;\n"
-              "        return [...this._items].sort((a, b) => horizontal\n"
-              "            ? a.baseCenterX - b.baseCenterX\n"
-              "            : a.baseCenterY - b.baseCenterY);\n"
-              "    }\n\n")
-
-          helper = anchor + (
-              "    _isDockTransitioning() {\n"
-              "        const state = this._dock?.getDockState?.();\n"
-              "        // docking.js: SHOWING = 1, HIDING = 3.\n"
-              "        return state === 1 || state === 3;\n"
-              "    }\n\n"
-              "    _isDockFullyHidden() {\n"
-              "        const state = this._dock?.getDockState?.();\n"
-              "        const slide = Math.max(0, Math.min(1,\n"
-              "            this._dock?._slider?.slideX ?? 1));\n"
-              "        // docking.js: HIDDEN = 0. Requiring lifecycle state and final\n"
-              "        // slide position prevents reveal startup from looking hidden.\n"
-              "        return state === 0 && slide <= MATERIAL_HIDDEN_SLIDE;\n"
-              "    }\n\n")
-
-          replace_once(anchor, helper)
-          path.write_text(s)
-          PY
-
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -155,16 +59,16 @@ jobs:
       - name: Write build summary
         run: |
           {
-            echo '## Native macOS dock renderer v2.2 autohide fix'
+            echo '## Native macOS dock renderer v2.2 autohide lifecycle fix'
             echo ''
             echo 'Download the **dash-to-dock-macos-native-v2** artifact below.'
             echo 'The downloaded artifact ZIP is the installable GNOME extension package.'
             echo ''
-            echo 'Autohide fix:'
-            echo '- renderer wakes on Dock showing/hiding signals'
-            echo '- frame clock stays active while slide animation runs'
-            echo '- glass disappears only at the true final hidden state'
-            echo '- normal edge reveal is no longer blocked by the 3.5% threshold'
+            echo 'Autohide lifecycle fix:'
+            echo '- renderer wakes from native Dock showing/hiding signals'
+            echo '- frame clock stays alive throughout the slide transition'
+            echo '- detached glass disappears only at the true final HIDDEN state'
+            echo '- bottom-edge reveal is no longer blocked by a raw slide threshold'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload ready-to-install extension
