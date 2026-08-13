@@ -24,9 +24,9 @@ const MACOS_BACKGROUND_STYLE = [
  * and keeps drag-and-drop/hit testing based on stable allocations.
  */
 export class MacDockEffects {
-    constructor(dockManager) {
+    constructor(dockManager, extension) {
         this._dockManager = dockManager;
-        this._settings = dockManager.extension.getSettings(MACOS_SCHEMA);
+        this._settings = extension.getSettings(MACOS_SCHEMA);
         this._controllers = new Map();
 
         this._docksReadyId = dockManager.connect('docks-ready', () => this._sync());
@@ -55,7 +55,7 @@ export class MacDockEffects {
         if (!this._dockManager)
             return;
 
-        const enabled = this._settings.macosStyle;
+        const enabled = this._settings.get_boolean('macos-style');
         const docks = this._dockManager._allDocks ?? [];
 
         for (const [dock, controller] of this._controllers) {
@@ -202,10 +202,10 @@ class DockMagnifier {
 
         const horizontal = this._dock.isHorizontal;
         const pointer = horizontal ? pointerX : pointerY;
-        const radius = Math.max(24, this._settings.macosMagnificationRadius);
-        const strength = Math.max(0, this._settings.macosMagnification);
-        const spread = Math.max(0, this._settings.macosSpread);
-        const duration = Math.max(0, this._settings.macosAnimationDuration);
+        const radius = Math.max(24, this._settings.get_double('macos-magnification-radius'));
+        const strength = Math.max(0, this._settings.get_double('macos-magnification'));
+        const spread = Math.max(0, this._settings.get_double('macos-spread'));
+        const duration = Math.max(0, this._settings.get_int('macos-animation-duration'));
 
         // A Gaussian produces the continuous macOS-like wave. Sigma is chosen
         // so influence is already very small at the configured radius.
@@ -294,9 +294,9 @@ class DockMagnifier {
     }
 
     _restore(immediate = false) {
-        const duration = immediate
+        const duration = immediate || !this._settings
             ? 0
-            : Math.max(0, this._settings?.macosAnimationDuration ?? 120);
+            : Math.max(0, this._settings.get_int('macos-animation-duration'));
 
         for (const {actor} of this._getItems()) {
             actor.ease({
