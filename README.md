@@ -8,6 +8,31 @@ This extension enhances the dash moving it out of the overview and transforming 
 
 For additional installation instructions and more information visit [https://micheleg.github.io/dash-to-dock/](https://micheleg.github.io/dash-to-dock/).
 
+## macOS-inspired dock preview
+
+This fork contains an experimental, opt-in macOS-inspired presentation layer. It adds a continuous cursor-distance fish-eye wave, neighbor spreading, inward icon lift, and a rounded floating dock treatment without replacing Dash to Dock's allocation, drag-and-drop, overview, or autohide logic.
+
+The feature is disabled by default. After building and installing the `feature/macos-fisheye` branch, enable it with:
+
+```bash
+gsettings set org.gnome.shell.extensions.dash-to-dock.macos macos-style true
+```
+
+The default tuning is a 1.55x peak magnification over a 118 logical-pixel radius, with moderate neighbor spreading and a 90 ms easing duration. It can be tuned live:
+
+```bash
+gsettings set org.gnome.shell.extensions.dash-to-dock.macos macos-magnification 0.55
+gsettings set org.gnome.shell.extensions.dash-to-dock.macos macos-magnification-radius 118.0
+gsettings set org.gnome.shell.extensions.dash-to-dock.macos macos-spread 0.42
+gsettings set org.gnome.shell.extensions.dash-to-dock.macos macos-animation-duration 90
+```
+
+Disable the experimental layer at any time with:
+
+```bash
+gsettings set org.gnome.shell.extensions.dash-to-dock.macos macos-style false
+```
+
 ## Installation from source
 
 The extension can be installed directly from source, either for the convenience of using git or to test the latest development version. Clone the desired branch with git
