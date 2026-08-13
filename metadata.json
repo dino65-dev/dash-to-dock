@@ -9,10 +9,10 @@
     "51"
 ],
 "uuid": "dash-to-dock@micxgx.gmail.com",
-"name": "Dash to Dock — macOS Native v108",
+"name": "Dash to Dock — macOS Native v109",
 "description": "Experimental macOS-style native compositor renderer for Dash to Dock with high-resolution fish-eye magnification, spring motion, frosted adaptive glass, icon reflections and structural divider controls.",
 "original-author": "micxgx@gmail.com",
 "url": "https://github.com/dino65-dev/dash-to-dock",
 "gettext-domain": "dashtodock",
-"version": 108
+"version": 109
 }
