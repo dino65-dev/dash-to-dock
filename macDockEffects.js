@@ -15,21 +15,23 @@ const SPRING_EPSILON = 0.0025;
 const OFFSET_EPSILON = 0.08;
 const VELOCITY_EPSILON = 0.02;
 const MATERIAL_MARGIN = 5;
+const MATERIAL_HIDDEN_SLIDE = 0.035;
 const DOT_SIZE = 4;
 
 /**
  * macOS-style presentation layer for Dash to Dock.
  *
  * Dash-to-Dock remains the application/window, autohide, menu and DND backend.
- * This module only replaces its visual presentation while macos-style is on.
+ * This module replaces only its presentation while macos-style is enabled.
  *
- * Important design rules:
- *  - never resize icon textures per frame;
- *  - create high-resolution icon actors once and only transform them;
- *  - use a Clutter frame-clock Timeline instead of one ease() per mouse event;
- *  - keep Dash icon actors alive as almost-transparent native input proxies;
- *  - move those proxies with the same geometry as the rendered icons;
- *  - switch completely back to the native Dash during drag/reorder operations.
+ * Design rules:
+ *  - icon textures are created once at high resolution and never resized per frame;
+ *  - only compositor transforms change while the pointer moves;
+ *  - a Clutter Timeline drives a damped spring from Mutter's frame clock;
+ *  - the native Dash actors remain almost transparent input/DND proxies;
+ *  - the glass material expands only along the Dock's long axis, like macOS;
+ *  - magnified icons are intentionally allowed to bulge outside the material;
+ *  - DND temporarily returns completely to native Dash-to-Dock.
  */
 export class MacDockEffects {
     constructor(dockManager, extension) {
@@ -37,8 +39,11 @@ export class MacDockEffects {
         this._settings = extension.getSettings(MACOS_SCHEMA);
         this._renderers = new Map();
 
-        this._docksReadyId = dockManager.connect('docks-ready', () => this._sync());
-        this._styleChangedId = this._settings.connect('changed::macos-style', () => this._sync());
+        this._docksReadyId =
+            dockManager.connect('docks-ready', () => this._sync());
+        this._styleChangedId = this._settings.connect(
+            'changed::macos-style', () => this._sync());
+
         this._sync();
     }
 
@@ -103,6 +108,7 @@ class MacDockRenderer {
         this._backgroundOpacity = dock.dash._background.opacity;
         this._lastSeparator = null;
         this._separatorOpacity = 255;
+        this._materialRect = null;
     }
 
     enable() {
@@ -140,6 +146,8 @@ class MacDockRenderer {
             this._needsTextureRebuild = true;
             this._queueSync();
         });
+        this._connect(this._dock.dash._showAppsIcon, 'notify::visible',
+            () => this._queueSync());
         this._connect(global.stage, 'notify::width', () => this._resizeLayer());
         this._connect(global.stage, 'notify::height', () => this._resizeLayer());
 
@@ -149,23 +157,27 @@ class MacDockRenderer {
 
             if (key === 'macos-magnification' || key === 'macos-icon-quality')
                 this._needsTextureRebuild = true;
+
             if (key.startsWith('macos-glass') || key === 'macos-corner-radius') {
                 this._updateMaterialStyle();
                 this._configureBlur();
+                this._materialRect = null;
             }
 
             this._queueSync();
         });
 
         if (!Main.overview.isDummy) {
-            this._connect(Main.overview, 'item-drag-begin', () => this._onDragBegin());
-            this._connect(Main.overview, 'item-drag-end', () => this._onDragEnd());
-            this._connect(Main.overview, 'item-drag-cancelled', () => this._onDragEnd());
+            this._connect(Main.overview, 'item-drag-begin',
+                () => this._onDragBegin());
+            this._connect(Main.overview, 'item-drag-end',
+                () => this._onDragEnd());
+            this._connect(Main.overview, 'item-drag-cancelled',
+                () => this._onDragEnd());
         }
 
-        // A captured-event handler is used only for the portion of a magnified
-        // icon that visually extends beyond Dash-to-Dock's clipped input area.
-        // Normal clicks and all native DND remain handled by Dash-to-Dock.
+        // Only captures clicks in the visually magnified portion outside
+        // Dash-to-Dock's normal allocation. Native clicks/DND remain untouched.
         this._connect(global.stage, 'captured-event', (_stage, event) =>
             this._onCapturedEvent(event));
 
@@ -177,8 +189,8 @@ class MacDockRenderer {
     destroy() {
         if (this._destroyed)
             return;
-        this._destroyed = true;
 
+        this._destroyed = true;
         this._stopTimeline();
         this._setMacPresentation(false);
         this._destroyItems();
@@ -187,7 +199,7 @@ class MacDockRenderer {
             try {
                 actor.disconnect(id);
             } catch {
-                // Dock actors may already be destroyed during extension disable.
+                // Dock actors may already be gone during extension shutdown.
             }
         }
         this._connections = [];
@@ -203,6 +215,7 @@ class MacDockRenderer {
     _connect(actor, signal, callback) {
         if (!actor)
             return;
+
         const id = actor.connect(signal, callback);
         this._connections.push([actor, id]);
     }
@@ -215,7 +228,9 @@ class MacDockRenderer {
     _resizeLayer() {
         if (!this._layer)
             return;
+
         this._layer.set_size(global.stage.width, global.stage.height);
+        this._materialRect = null;
         this._wake();
     }
 
@@ -231,9 +246,10 @@ class MacDockRenderer {
                 duration: 1000,
             });
         }
+
         this._timeline.set_repeat_count(-1);
-        this._timelineFrameId = this._timeline.connect('new-frame', timeline =>
-            this._onFrame(timeline));
+        this._timelineFrameId = this._timeline.connect(
+            'new-frame', timeline => this._onFrame(timeline));
     }
 
     _wake() {
@@ -254,6 +270,7 @@ class MacDockRenderer {
             this._timeline.disconnect(this._timelineFrameId);
             this._timelineFrameId = 0;
         }
+
         this._timeline.stop();
         this._timeline = null;
     }
@@ -262,7 +279,9 @@ class MacDockRenderer {
         if (this._destroyed || this._dragging)
             return;
 
-        if (this._needsSync || this._sourcesChanged())
+        // App list changes wake the frame clock through child-added/removed.
+        // Avoid re-walking the entire Dash application model every display frame.
+        if (this._needsSync)
             this._syncItems(this._needsTextureRebuild);
 
         if (!this._items.length) {
@@ -273,7 +292,6 @@ class MacDockRenderer {
             return;
         }
 
-        this._setMacPresentation(true);
         this._updateBaseGeometry();
 
         let dt = timeline.get_delta() / 1000;
@@ -296,19 +314,6 @@ class MacDockRenderer {
             if (this._runningFramesWithoutWork > 2)
                 timeline.pause();
         }
-    }
-
-    _sourcesChanged() {
-        const current = this._getSourceDescriptors();
-        if (current.length !== this._items.length)
-            return true;
-
-        for (let i = 0; i < current.length; i++) {
-            if (current[i].source !== this._items[i].source ||
-                current[i].item !== this._items[i].item)
-                return true;
-        }
-        return false;
     }
 
     _getSourceDescriptors() {
@@ -337,7 +342,8 @@ class MacDockRenderer {
 
     _syncItems(forceTextureRebuild = false) {
         const descriptors = this._getSourceDescriptors();
-        const canReuse = !forceTextureRebuild && descriptors.length === this._items.length &&
+        const canReuse = !forceTextureRebuild &&
+            descriptors.length === this._items.length &&
             descriptors.every((descriptor, i) =>
                 descriptor.source === this._items[i].source &&
                 descriptor.item === this._items[i].item);
@@ -352,13 +358,16 @@ class MacDockRenderer {
         this._items = descriptors.map(descriptor => this._createItem(descriptor));
         this._needsSync = false;
         this._needsTextureRebuild = false;
+        this._materialRect = null;
         this._setMacPresentation(true);
     }
 
     _createItem(descriptor) {
         const baseSize = this._getSourceIconSize(descriptor);
-        const maxScale = 1 + Math.max(0, this._settings.get_double('macos-magnification'));
-        const quality = Math.max(1, this._settings.get_double('macos-icon-quality'));
+        const maxScale =
+            1 + Math.max(0, this._settings.get_double('macos-magnification'));
+        const quality =
+            Math.max(1, this._settings.get_double('macos-icon-quality'));
         const textureSize = Math.min(MAX_TEXTURE_SIZE, Math.max(MIN_TEXTURE_SIZE,
             Math.ceil(baseSize * maxScale * quality)));
 
@@ -388,6 +397,10 @@ class MacDockRenderer {
 
         actor.reactive = false;
         actor.set_size(textureSize, textureSize);
+
+        const [pivotX, pivotY] = this._pivotForPosition();
+        actor.set_pivot_point(pivotX, pivotY);
+        descriptor.source.set_pivot_point(pivotX, pivotY);
         this._layer.add_child(actor);
 
         const dot = new St.Widget({
@@ -399,7 +412,7 @@ class MacDockRenderer {
         dot.visible = descriptor.kind === 'app' && !!descriptor.source.running;
         this._layer.add_child(dot);
 
-        return {
+        const item = {
             ...descriptor,
             actor,
             dot,
@@ -418,7 +431,19 @@ class MacDockRenderer {
             originalSourceOpacity: descriptor.source.opacity,
             originalItemTranslationX: descriptor.item.translationX,
             originalItemTranslationY: descriptor.item.translationY,
+            stateConnections: [],
         };
+
+        for (const signal of ['notify::running', 'notify::focused']) {
+            try {
+                const id = descriptor.source.connect(signal, () => this._wake());
+                item.stateConnections.push([descriptor.source, id]);
+            } catch {
+                // Not every non-app proxy exposes both state properties.
+            }
+        }
+
+        return item;
     }
 
     _getSourceIconSize(descriptor) {
@@ -438,9 +463,19 @@ class MacDockRenderer {
     _destroyItems() {
         for (const item of this._items) {
             this._restoreSourceItem(item);
+
+            for (const [actor, id] of item.stateConnections ?? []) {
+                try {
+                    actor.disconnect(id);
+                } catch {
+                    // Source may already be destroyed by a Dash redisplay.
+                }
+            }
+
             item.actor?.destroy();
             item.dot?.destroy();
         }
+
         this._items = [];
     }
 
@@ -455,7 +490,7 @@ class MacDockRenderer {
             item.item.translationX = item.originalItemTranslationX ?? 0;
             item.item.translationY = item.originalItemTranslationY ?? 0;
         } catch {
-            // Item may have been destroyed by a dash redisplay.
+            // Item may have been destroyed by a Dash redisplay.
         }
     }
 
@@ -476,8 +511,8 @@ class MacDockRenderer {
             return;
         }
 
-        // Opacity 1 keeps the native actor in the pick/input graph while making
-        // its old icon/indicator presentation effectively invisible.
+        // Opacity 1 keeps native actors in Clutter's pick/input graph while
+        // visually replacing their normal icon and indicator presentation.
         this._dock.dash._background.opacity = 0;
         for (const item of this._items) {
             try {
@@ -486,6 +521,7 @@ class MacDockRenderer {
                 // Source may have disappeared during redisplay.
             }
         }
+
         this._hideSeparator();
     }
 
@@ -499,17 +535,20 @@ class MacDockRenderer {
             this._lastSeparator = separator;
             this._separatorOpacity = separator.opacity;
         }
+
         separator.opacity = 0;
     }
 
     _restoreSeparator() {
         if (!this._lastSeparator)
             return;
+
         try {
             this._lastSeparator.opacity = this._separatorOpacity;
         } catch {
             // Separator may have been destroyed by redisplay.
         }
+
         this._lastSeparator = null;
         this._separatorOpacity = 255;
     }
@@ -519,8 +558,8 @@ class MacDockRenderer {
             let [x, y] = item.item.get_transformed_position();
             const [width, height] = item.item.get_transformed_size();
 
-            // Remove the transform applied by the previous animation frame to
-            // recover the stable Dash allocation as our layout input.
+            // Strip our previous primary-axis translation to recover the stable
+            // Dash allocation used as the next frame's layout input.
             x -= item.item.translationX ?? 0;
             y -= item.item.translationY ?? 0;
 
@@ -538,15 +577,18 @@ class MacDockRenderer {
     }
 
     _pointerInActivationZone(pointerX, pointerY) {
-        if (!this._items.length || (this._dock._slider?.slideX ?? 1) <= 0.02)
+        if (!this._items.length ||
+            (this._dock._slider?.slideX ?? 1) <= MATERIAL_HIDDEN_SLIDE)
             return false;
 
         const orderedItems = this._orderedItems();
         const [first] = orderedItems;
         const last = orderedItems.at(-1);
         const horizontal = this._dock.isHorizontal;
-        const maxScale = 1 + Math.max(0, this._settings.get_double('macos-magnification'));
-        const radius = Math.max(32, this._settings.get_double('macos-magnification-radius'));
+        const maxScale =
+            1 + Math.max(0, this._settings.get_double('macos-magnification'));
+        const radius =
+            Math.max(32, this._settings.get_double('macos-magnification-radius'));
         const baseSize = Math.max(...orderedItems.map(item => item.baseSize));
         const inwardReach = baseSize * maxScale * 0.62 + 16;
         const outwardReach = baseSize * 0.65 + 16;
@@ -558,10 +600,12 @@ class MacDockRenderer {
 
             const centerY = orderedItems.reduce((sum, item) =>
                 sum + item.baseCenterY, 0) / orderedItems.length;
+
             if (this._dock.position === St.Side.BOTTOM) {
                 return pointerY >= centerY - inwardReach &&
                     pointerY <= centerY + outwardReach;
             }
+
             return pointerY >= centerY - outwardReach &&
                 pointerY <= centerY + inwardReach;
         }
@@ -572,10 +616,12 @@ class MacDockRenderer {
 
         const centerX = orderedItems.reduce((sum, item) =>
             sum + item.baseCenterX, 0) / orderedItems.length;
+
         if (this._dock.position === St.Side.LEFT) {
             return pointerX >= centerX - outwardReach &&
                 pointerX <= centerX + inwardReach;
         }
+
         return pointerX >= centerX - inwardReach &&
             pointerX <= centerX + outwardReach;
     }
@@ -583,8 +629,10 @@ class MacDockRenderer {
     _updateTargets(pointerX, pointerY, active) {
         const horizontal = this._dock.isHorizontal;
         const pointerAxis = horizontal ? pointerX : pointerY;
-        const maxScale = 1 + Math.max(0, this._settings.get_double('macos-magnification'));
-        const radius = Math.max(32, this._settings.get_double('macos-magnification-radius'));
+        const maxScale =
+            1 + Math.max(0, this._settings.get_double('macos-magnification'));
+        const radius =
+            Math.max(32, this._settings.get_double('macos-magnification-radius'));
         const orderedItems = this._orderedItems();
         const growth = [];
 
@@ -603,12 +651,11 @@ class MacDockRenderer {
             growth.push(item.baseSize * (item.targetScale - 1));
         }
 
-        // Geometry-derived spreading. Each icon receives half of all extra
-        // growth on its left minus half of all extra growth on its right.
-        // There is no discrete "nearest icon" anchor, so crossing icon
-        // boundaries cannot make the wave jump.
+        // Each icon receives half of all extra growth on its left minus half
+        // of all extra growth on its right. There is no nearest-icon anchor.
         const totalGrowth = growth.reduce((sum, value) => sum + value, 0);
         let leftGrowth = 0;
+
         for (let i = 0; i < orderedItems.length; i++) {
             const rightGrowth = totalGrowth - leftGrowth - growth[i];
             orderedItems[i].targetOffset = active
@@ -619,8 +666,10 @@ class MacDockRenderer {
     }
 
     _integrate(dt) {
-        const response = Math.max(8, this._settings.get_double('macos-spring-response'));
-        const damping = Math.max(0.5, this._settings.get_double('macos-spring-damping'));
+        const response =
+            Math.max(8, this._settings.get_double('macos-spring-response'));
+        const damping =
+            Math.max(0.5, this._settings.get_double('macos-spring-damping'));
         let moving = false;
 
         for (const item of this._items) {
@@ -643,6 +692,8 @@ class MacDockRenderer {
 
     _paintItems() {
         const horizontal = this._dock.isHorizontal;
+        const hidden =
+            (this._dock._slider?.slideX ?? 1) <= MATERIAL_HIDDEN_SLIDE;
 
         for (const item of this._items) {
             const {scale} = item;
@@ -655,10 +706,6 @@ class MacDockRenderer {
                 centerX += item.offset;
             else
                 centerY += item.offset;
-
-            const [pivotX, pivotY] = this._pivotForPosition();
-            item.actor.set_pivot_point(pivotX, pivotY);
-            item.source.set_pivot_point(pivotX, pivotY);
 
             let actorX;
             let actorY;
@@ -684,10 +731,10 @@ class MacDockRenderer {
 
             item.actor.set_position(Math.round(actorX), Math.round(actorY));
             item.actor.set_scale(renderScale, renderScale);
-            item.actor.opacity = 255;
+            item.actor.visible = !hidden;
 
-            // Move the native Dash item to the same primary-axis centre and
-            // scale its hit box. Its pixels remain hidden by source.opacity=1.
+            // The nearly transparent native actor remains the real interaction
+            // proxy and follows the same primary-axis geometry.
             if (horizontal) {
                 item.item.translationX = item.offset;
                 item.item.translationY = item.originalItemTranslationY ?? 0;
@@ -695,25 +742,30 @@ class MacDockRenderer {
                 item.item.translationX = item.originalItemTranslationX ?? 0;
                 item.item.translationY = item.offset;
             }
+
             item.source.set_scale(scale, scale);
-            item.source.opacity = 1;
 
             const visualSize = item.baseSize * scale;
             let visualCenterX = centerX;
             let visualCenterY = centerY;
+
             switch (this._dock.position) {
             case St.Side.TOP:
-                visualCenterY = item.baseCenterY - item.baseSize / 2 + visualSize / 2;
+                visualCenterY =
+                    item.baseCenterY - item.baseSize / 2 + visualSize / 2;
                 break;
             case St.Side.LEFT:
-                visualCenterX = item.baseCenterX - item.baseSize / 2 + visualSize / 2;
+                visualCenterX =
+                    item.baseCenterX - item.baseSize / 2 + visualSize / 2;
                 break;
             case St.Side.RIGHT:
-                visualCenterX = item.baseCenterX + item.baseSize / 2 - visualSize / 2;
+                visualCenterX =
+                    item.baseCenterX + item.baseSize / 2 - visualSize / 2;
                 break;
             case St.Side.BOTTOM:
             default:
-                visualCenterY = item.baseCenterY + item.baseSize / 2 - visualSize / 2;
+                visualCenterY =
+                    item.baseCenterY + item.baseSize / 2 - visualSize / 2;
                 break;
             }
 
@@ -724,12 +776,15 @@ class MacDockRenderer {
                 height: visualSize,
             };
 
-            this._paintRunningDot(item, centerX, centerY);
+            this._paintRunningDot(item, centerX, centerY, hidden);
         }
     }
 
-    _paintRunningDot(item, centerX, centerY) {
-        if (item.kind !== 'app' || !item.source.running) {
+    _paintRunningDot(item, centerX, centerY, hidden) {
+        const shouldShow =
+            !hidden && item.kind === 'app' && !!item.source.running;
+
+        if (!shouldShow) {
             item.dot.hide();
             return;
         }
@@ -774,30 +829,66 @@ class MacDockRenderer {
     }
 
     _paintMaterial() {
-        if (!this._items.length) {
+        const slide = Math.max(0, Math.min(1,
+            this._dock._slider?.slideX ?? 1));
+
+        // DashSlideContainer can leave a few material pixels on-screen because
+        // our glass actor intentionally has extra margin. Hide it completely at
+        // the final autohide position so no rounded border/blur strip remains.
+        if (!this._items.length || slide <= MATERIAL_HIDDEN_SLIDE) {
             this._material.hide();
+            this._materialRect = null;
             return;
         }
 
-        this._material.show();
+        const horizontal = this._dock.isHorizontal;
+        const orderedItems = this._orderedItems();
         let minX = Number.POSITIVE_INFINITY;
         let minY = Number.POSITIVE_INFINITY;
         let maxX = Number.NEGATIVE_INFINITY;
         let maxY = Number.NEGATIVE_INFINITY;
 
-        for (const item of this._items) {
-            minX = Math.min(minX, item.baseRect.x);
-            minY = Math.min(minY, item.baseRect.y);
-            maxX = Math.max(maxX, item.baseRect.x + item.baseRect.width);
-            maxY = Math.max(maxY, item.baseRect.y + item.baseRect.height);
+        for (const item of orderedItems) {
+            if (!item.baseRect)
+                continue;
+
+            // macOS behavior: the material follows the translated tile slots
+            // along the Dock's long axis, but keeps its normal cross-axis
+            // thickness. Magnified icon artwork is allowed to bulge outside.
+            const x = item.baseRect.x + (horizontal ? item.offset : 0);
+            const y = item.baseRect.y + (horizontal ? 0 : item.offset);
+
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x + item.baseRect.width);
+            maxY = Math.max(maxY, y + item.baseRect.height);
         }
 
-        const x = Math.round(minX - MATERIAL_MARGIN);
-        const y = Math.round(minY - MATERIAL_MARGIN);
-        const width = Math.max(1, Math.round(maxX - minX + MATERIAL_MARGIN * 2));
-        const height = Math.max(1, Math.round(maxY - minY + MATERIAL_MARGIN * 2));
-        this._material.set_position(x, y);
-        this._material.set_size(width, height);
+        if (!Number.isFinite(minX) || !Number.isFinite(minY)) {
+            this._material.hide();
+            this._materialRect = null;
+            return;
+        }
+
+        const rect = {
+            x: Math.round(minX - MATERIAL_MARGIN),
+            y: Math.round(minY - MATERIAL_MARGIN),
+            width: Math.max(1,
+                Math.round(maxX - minX + MATERIAL_MARGIN * 2)),
+            height: Math.max(1,
+                Math.round(maxY - minY + MATERIAL_MARGIN * 2)),
+        };
+
+        this._material.show();
+
+        // Avoid pointless layout/blur invalidation on frames where integer
+        // geometry did not change.
+        if (sameRect(this._materialRect, rect))
+            return;
+
+        this._material.set_position(rect.x, rect.y);
+        this._material.set_size(rect.width, rect.height);
+        this._materialRect = rect;
     }
 
     _updateMaterialStyle() {
@@ -806,7 +897,9 @@ class MacDockRenderer {
 
         const opacity = Math.max(0.05, Math.min(0.95,
             this._settings.get_double('macos-glass-opacity')));
-        const radius = Math.max(8, this._settings.get_double('macos-corner-radius'));
+        const radius =
+            Math.max(8, this._settings.get_double('macos-corner-radius'));
+
         this._material.set_style(
             `background-color: rgba(30, 30, 32, ${opacity}); ` +
             `border-radius: ${radius}px; ` +
@@ -819,6 +912,7 @@ class MacDockRenderer {
             return;
 
         this._material.clear_effects?.();
+
         if (!this._settings.get_boolean('macos-glass-blur'))
             return;
         if (!Shell.BlurEffect || Shell.BlurMode?.BACKGROUND === undefined)
@@ -832,8 +926,7 @@ class MacDockRenderer {
             });
             this._material.add_effect_with_name('macos-dock-blur', blur);
         } catch {
-            // Blur is optional. Keep the translucent GPU-composited material if
-            // a particular Shell version does not expose background blur here.
+            // Blur is optional across the supported GNOME Shell range.
         }
     }
 
@@ -845,8 +938,6 @@ class MacDockRenderer {
         if (this._timeline?.is_playing())
             this._timeline.pause();
 
-        // During DND hand all rendering and hit testing back to Dash-to-Dock.
-        // This keeps its mature placeholder/reorder implementation untouched.
         this._neutralizeTransforms();
         this._setMacPresentation(false);
         this._layer.opacity = 0;
@@ -858,6 +949,7 @@ class MacDockRenderer {
 
         this._dragging = false;
         this._needsSync = true;
+        this._materialRect = null;
         this._layer.opacity = 255;
         this._setMacPresentation(true);
         this._wake();
@@ -871,6 +963,7 @@ class MacDockRenderer {
             item.offset = 0;
             item.offsetVelocity = 0;
             item.targetOffset = 0;
+
             try {
                 item.source.set_scale(1, 1);
                 item.item.translationX = item.originalItemTranslationX ?? 0;
@@ -882,7 +975,8 @@ class MacDockRenderer {
     }
 
     _onCapturedEvent(event) {
-        if (this._destroyed || this._dragging || !event)
+        if (this._destroyed || this._dragging || !event ||
+            (this._dock._slider?.slideX ?? 1) <= MATERIAL_HIDDEN_SLIDE)
             return Clutter.EVENT_PROPAGATE;
 
         let type;
@@ -891,6 +985,7 @@ class MacDockRenderer {
         } catch {
             return Clutter.EVENT_PROPAGATE;
         }
+
         if (type !== Clutter.EventType.BUTTON_PRESS)
             return Clutter.EVENT_PROPAGATE;
 
@@ -906,7 +1001,8 @@ class MacDockRenderer {
         }
 
         if (hit.kind === 'app' &&
-            (button === Clutter.BUTTON_PRIMARY || button === Clutter.BUTTON_MIDDLE)) {
+            (button === Clutter.BUTTON_PRIMARY ||
+             button === Clutter.BUTTON_MIDDLE)) {
             hit.source.activate(button);
             return Clutter.EVENT_STOP;
         }
@@ -921,25 +1017,27 @@ class MacDockRenderer {
         for (const item of this._items) {
             if (!item.visualRect || !pointInRect(item.visualRect, x, y))
                 continue;
-            const dx = x - (item.visualRect.x + item.visualRect.width / 2);
-            const dy = y - (item.visualRect.y + item.visualRect.height / 2);
+
+            const dx = x -
+                (item.visualRect.x + item.visualRect.width / 2);
+            const dy = y -
+                (item.visualRect.y + item.visualRect.height / 2);
             const distance = dx * dx + dy * dy;
+
             if (distance < bestDistance) {
                 best = item;
                 bestDistance = distance;
             }
         }
+
         return best;
     }
 }
 
 /**
- * Stable implicit integration of a damped second-order spring.
+ * Stable implicit integration of a damped second-order spring:
  *
  *   x'' + 2*zeta*omega*x' + omega^2*(x - target) = 0
- *
- * Unlike chained Clutter ease() calls, the state is continuous even when the
- * target changes on every display frame.
  */
 function springStep(value, velocity, target, omega, damping, dt) {
     const f = 1 + 2 * dt * damping * omega;
@@ -947,14 +1045,19 @@ function springStep(value, velocity, target, omega, damping, dt) {
     const hoo = dt * oo;
     const hhoo = dt * hoo;
     const inverseDeterminant = 1 / (f + hhoo);
-    const nextValue = (f * value + dt * velocity + hhoo * target) *
-        inverseDeterminant;
-    const nextVelocity = (velocity + hoo * (target - value)) *
-        inverseDeterminant;
+    const nextValue =
+        (f * value + dt * velocity + hhoo * target) * inverseDeterminant;
+    const nextVelocity =
+        (velocity + hoo * (target - value)) * inverseDeterminant;
     return [nextValue, nextVelocity];
 }
 
 function pointInRect(rect, x, y) {
     return x >= rect.x && x <= rect.x + rect.width &&
         y >= rect.y && y <= rect.y + rect.height;
+}
+
+function sameRect(a, b) {
+    return !!a && a.x === b.x && a.y === b.y &&
+        a.width === b.width && a.height === b.height;
 }
