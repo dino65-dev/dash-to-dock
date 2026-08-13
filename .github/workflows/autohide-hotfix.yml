@@ -1,0 +1,143 @@
+name: Apply macOS dock autohide hotfix
+
+on:
+  push:
+    branches:
+      - feature/macos-fisheye
+    paths:
+      - .github/workflows/autohide-hotfix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-hotfix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/macos-fisheye
+          fetch-depth: 0
+
+      - name: Patch renderer visibility lifecycle
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('macDockEffects.js')
+          s = path.read_text()
+
+          replacements = [
+              (
+                  "        this._connect(this._dock._slider, 'notify::slide-x', () => this._wake());\n",
+                  "        this._connect(this._dock._slider, 'notify::slide-x', () => this._wake());\n"
+                  "        this._connect(this._dock, 'showing', () => {\n"
+                  "            this._materialRect = null;\n"
+                  "            this._wake();\n"
+                  "        });\n"
+                  "        this._connect(this._dock, 'hiding', () => this._wake());\n"
+              ),
+              (
+                  "        if (active || moving) {\n",
+                  "        const dockTransitioning = this._isDockTransitioning();\n\n"
+                  "        if (active || moving || dockTransitioning) {\n"
+              ),
+              (
+                  "    _pointerInActivationZone(pointerX, pointerY) {\n"
+                  "        if (!this._items.length ||\n"
+                  "            (this._dock._slider?.slideX ?? 1) <= MATERIAL_HIDDEN_SLIDE)\n"
+                  "            return false;\n",
+                  "    _pointerInActivationZone(pointerX, pointerY) {\n"
+                  "        if (!this._items.length || this._isDockFullyHidden())\n"
+                  "            return false;\n"
+              ),
+              (
+                  "        const horizontal = this._dock.isHorizontal;\n"
+                  "        const hidden =\n"
+                  "            (this._dock._slider?.slideX ?? 1) <= MATERIAL_HIDDEN_SLIDE;\n\n"
+                  "        for (const item of this._items) {\n",
+                  "        const horizontal = this._dock.isHorizontal;\n"
+                  "        const hidden = this._isDockFullyHidden();\n\n"
+                  "        for (const item of this._items) {\n"
+              ),
+              (
+                  "    _paintMaterial() {\n"
+                  "        const slide = Math.max(0, Math.min(1,\n"
+                  "            this._dock._slider?.slideX ?? 1));\n\n"
+                  "        // DashSlideContainer can leave a few material pixels on-screen because\n"
+                  "        // our glass actor intentionally has extra margin. Hide it completely at\n"
+                  "        // the final autohide position so no rounded border/blur strip remains.\n"
+                  "        if (!this._items.length || slide <= MATERIAL_HIDDEN_SLIDE) {\n",
+                  "    _paintMaterial() {\n"
+                  "        // Hide the detached glass only after Dash-to-Dock has actually reached\n"
+                  "        // State.HIDDEN. During SHOWING/HIDING the renderer must keep painting\n"
+                  "        // while slide-x moves between 0 and 1.\n"
+                  "        if (!this._items.length || this._isDockFullyHidden()) {\n"
+              ),
+              (
+                  "        if (this._destroyed || this._dragging || !event ||\n"
+                  "            (this._dock._slider?.slideX ?? 1) <= MATERIAL_HIDDEN_SLIDE)\n"
+                  "            return Clutter.EVENT_PROPAGATE;\n",
+                  "        if (this._destroyed || this._dragging || !event ||\n"
+                  "            this._isDockFullyHidden())\n"
+                  "            return Clutter.EVENT_PROPAGATE;\n"
+              ),
+          ]
+
+          for old, new in replacements:
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'Expected exactly one match, found {count}: {old[:80]!r}')
+              s = s.replace(old, new, 1)
+
+          anchor = """    _orderedItems() {
+              const horizontal = this._dock.isHorizontal;
+              return [...this._items].sort((a, b) => horizontal
+                  ? a.baseCenterX - b.baseCenterX
+                  : a.baseCenterY - b.baseCenterY);
+          }
+
+"""
+          helper = """    _orderedItems() {
+              const horizontal = this._dock.isHorizontal;
+              return [...this._items].sort((a, b) => horizontal
+                  ? a.baseCenterX - b.baseCenterX
+                  : a.baseCenterY - b.baseCenterY);
+          }
+
+          _isDockTransitioning() {
+              const state = this._dock?.getDockState?.();
+              // docking.js State.SHOWING = 1 and State.HIDING = 3.
+              return state === 1 || state === 3;
+          }
+
+          _isDockFullyHidden() {
+              const state = this._dock?.getDockState?.();
+              const slide = Math.max(0, Math.min(1,
+                  this._dock?._slider?.slideX ?? 1));
+              // docking.js State.HIDDEN = 0. Requiring both state and final slide
+              // prevents a reveal animation from being mistaken for hidden.
+              return state === 0 && slide <= MATERIAL_HIDDEN_SLIDE;
+          }
+
+"""
+          if s.count(anchor) != 1:
+              raise SystemExit('Could not locate _orderedItems helper insertion point')
+          s = s.replace(anchor, helper, 1)
+
+          path.write_text(s)
+          PY
+
+      - name: Validate syntax
+        run: node --check macDockEffects.js
+
+      - name: Commit source fix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add macDockEffects.js
+          git diff --cached --check
+          git commit -m "Fix macOS dock autohide reveal lifecycle"
+          git push origin HEAD:feature/macos-fisheye
