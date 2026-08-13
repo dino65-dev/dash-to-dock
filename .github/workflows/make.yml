@@ -23,6 +23,121 @@ jobs:
       - name: Check out the codebase
         uses: actions/checkout@v4
 
+      - name: Apply reliable X11 screen-edge reveal
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('macDockEffects.js')
+          s = p.read_text()
+
+          if 'const EDGE_REVEAL_TOLERANCE = 2;' not in s:
+              s = s.replace(
+                  'const MATERIAL_HIDDEN_SLIDE = 0.035;\nconst DOT_SIZE = 4;',
+                  'const MATERIAL_HIDDEN_SLIDE = 0.035;\n'
+                  'const EDGE_REVEAL_TOLERANCE = 2;\n'
+                  'const DOT_SIZE = 4;', 1)
+
+              old_capture = '''    _onCapturedEvent(event) {
+                  if (this._destroyed || this._dragging || !event ||
+                      this._isDockFullyHidden())
+                      return Clutter.EVENT_PROPAGATE;
+
+                  let type;
+                  try {
+                      type = event.type();
+                  } catch {
+                      return Clutter.EVENT_PROPAGATE;
+                  }
+
+                  if (type !== Clutter.EventType.BUTTON_PRESS)
+                      return Clutter.EVENT_PROPAGATE;
+
+                  const [x, y] = event.get_coords();
+'''
+              new_capture = '''    _onCapturedEvent(event) {
+                  if (this._destroyed || this._dragging || !event)
+                      return Clutter.EVENT_PROPAGATE;
+
+                  let type;
+                  try {
+                      type = event.type();
+                  } catch {
+                      return Clutter.EVENT_PROPAGATE;
+                  }
+
+                  // The detached renderer must not depend on the hidden native Dock
+                  // actor being pickable. Stage capture sees pointer motion first.
+                  if (type === Clutter.EventType.MOTION) {
+                      const [x, y] = event.get_coords();
+                      this._maybeRevealFromEdge(x, y);
+                      return Clutter.EVENT_PROPAGATE;
+                  }
+
+                  if (this._isDockFullyHidden() ||
+                      type !== Clutter.EventType.BUTTON_PRESS)
+                      return Clutter.EVENT_PROPAGATE;
+
+                  const [x, y] = event.get_coords();
+'''
+              if s.count(old_capture) != 1:
+                  raise SystemExit('Could not locate original captured-event block')
+              s = s.replace(old_capture, new_capture, 1)
+
+              anchor = '    _onCapturedEvent(event) {\n'
+              helper = '''    _maybeRevealFromEdge(pointerX, pointerY) {
+                  if (!this._isDockFullyHidden() || Main.overview.visibleTarget)
+                      return;
+
+                  if (!this._dock?._autohideIsEnabled &&
+                      !this._dock?._intellihideIsEnabled)
+                      return;
+
+                  const monitor = this._dock?._monitor;
+                  if (!monitor || monitor.inFullscreen)
+                      return;
+
+                  const left = monitor.x;
+                  const right = monitor.x + monitor.width - 1;
+                  const top = monitor.y;
+                  const bottom = monitor.y + monitor.height - 1;
+                  const tolerance = EDGE_REVEAL_TOLERANCE;
+                  const insideX = pointerX >= left && pointerX <= right;
+                  const insideY = pointerY >= top && pointerY <= bottom;
+                  let onEdge = false;
+
+                  switch (this._dock.position) {
+                  case St.Side.LEFT:
+                      onEdge = insideY && pointerX <= left + tolerance;
+                      break;
+                  case St.Side.RIGHT:
+                      onEdge = insideY && pointerX >= right - tolerance;
+                      break;
+                  case St.Side.TOP:
+                      onEdge = insideX && pointerY <= top + tolerance;
+                      break;
+                  case St.Side.BOTTOM:
+                  default:
+                      onEdge = insideX && pointerY >= bottom - tolerance;
+                      break;
+                  }
+
+                  if (!onEdge)
+                      return;
+
+                  this._materialRect = null;
+                  this._wake();
+                  this._dock._show?.();
+              }
+
+'''
+              if s.count(anchor) != 1:
+                  raise SystemExit('Could not locate edge helper insertion point')
+              s = s.replace(anchor, helper + anchor, 1)
+              p.write_text(s)
+          PY
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -59,22 +174,21 @@ jobs:
       - name: Write build summary
         run: |
           {
-            echo '## Native macOS dock renderer v2.2 autohide lifecycle fix'
+            echo '## Native macOS dock renderer v2.3 — X11 edge reveal'
             echo ''
-            echo 'Download the **dash-to-dock-macos-native-v2** artifact below.'
-            echo 'The downloaded artifact ZIP is the installable GNOME extension package.'
+            echo 'Download **dash-to-dock-macos-native-v2.3-edge-reveal** below.'
             echo ''
-            echo 'Autohide lifecycle fix:'
-            echo '- renderer wakes from native Dock showing/hiding signals'
-            echo '- frame clock stays alive throughout the slide transition'
-            echo '- detached glass disappears only at the true final HIDDEN state'
-            echo '- bottom-edge reveal is no longer blocked by a raw slide threshold'
+            echo 'This build adds an event-driven screen-edge fallback:'
+            echo '- Clutter Stage capture detects pointer motion at the dock edge'
+            echo '- the native Dash-to-Dock _show() lifecycle performs the reveal'
+            echo '- no polling loop is used'
+            echo '- overview, autohide, intellihide, DND and native slide animation remain intact'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload ready-to-install extension
         uses: actions/upload-artifact@v4
         with:
-          name: dash-to-dock-macos-native-v2
+          name: dash-to-dock-macos-native-v2.3-edge-reveal
           path: _build/
           if-no-files-found: error
           retention-days: 30
