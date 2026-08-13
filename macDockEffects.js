@@ -186,7 +186,7 @@ class MacDockRenderer {
         for (const [actor, id] of this._connections) {
             try {
                 actor.disconnect(id);
-            } catch (_) {
+            } catch {
                 // Dock actors may already be destroyed during extension disable.
             }
         }
@@ -225,7 +225,7 @@ class MacDockRenderer {
 
         try {
             this._timeline = Clutter.Timeline.new_for_actor(this._layer, 1000);
-        } catch (_) {
+        } catch {
             this._timeline = new Clutter.Timeline({
                 actor: this._layer,
                 duration: 1000,
@@ -281,9 +281,7 @@ class MacDockRenderer {
             dt = 1 / 60;
         dt = Math.min(dt, 0.05);
 
-        const pointer = global.get_pointer();
-        const pointerX = pointer[0];
-        const pointerY = pointer[1];
+        const [pointerX, pointerY] = global.get_pointer();
         const active = this._pointerInActivationZone(pointerX, pointerY);
 
         this._updateTargets(pointerX, pointerY, active);
@@ -368,7 +366,7 @@ class MacDockRenderer {
         if (descriptor.kind === 'app') {
             try {
                 actor = descriptor.app?.create_icon_texture?.(textureSize) ?? null;
-            } catch (_) {
+            } catch {
                 actor = null;
             }
 
@@ -425,11 +423,12 @@ class MacDockRenderer {
 
     _getSourceIconSize(descriptor) {
         let actor = null;
-        if (descriptor.kind === 'app')
+        if (descriptor.kind === 'app') {
             actor = descriptor.source.icon?.icon ?? descriptor.source.icon;
-        else
+        } else {
             actor = this._dock.dash._showAppsIcon?.icon?.icon ??
                 this._dock.dash._showAppsIcon?.icon;
+        }
 
         const [width, height] = actor?.get_size?.() ?? [0, 0];
         const measured = Math.max(width || 0, height || 0);
@@ -455,7 +454,7 @@ class MacDockRenderer {
             item.source.set_pivot_point(0.5, 0.5);
             item.item.translationX = item.originalItemTranslationX ?? 0;
             item.item.translationY = item.originalItemTranslationY ?? 0;
-        } catch (_) {
+        } catch {
             // Item may have been destroyed by a dash redisplay.
         }
     }
@@ -469,7 +468,7 @@ class MacDockRenderer {
             for (const item of this._items) {
                 try {
                     item.source.opacity = item.originalSourceOpacity ?? 255;
-                } catch (_) {
+                } catch {
                     // Source may have disappeared during redisplay.
                 }
             }
@@ -483,7 +482,7 @@ class MacDockRenderer {
         for (const item of this._items) {
             try {
                 item.source.opacity = 1;
-            } catch (_) {
+            } catch {
                 // Source may have disappeared during redisplay.
             }
         }
@@ -508,7 +507,7 @@ class MacDockRenderer {
             return;
         try {
             this._lastSeparator.opacity = this._separatorOpacity;
-        } catch (_) {
+        } catch {
             // Separator may have been destroyed by redisplay.
         }
         this._lastSeparator = null;
@@ -529,9 +528,11 @@ class MacDockRenderer {
             item.baseCenterY = y + height / 2;
             item.baseRect = {x, y, width, height};
         }
+    }
 
+    _orderedItems() {
         const horizontal = this._dock.isHorizontal;
-        this._items.sort((a, b) => horizontal
+        return [...this._items].sort((a, b) => horizontal
             ? a.baseCenterX - b.baseCenterX
             : a.baseCenterY - b.baseCenterY);
     }
@@ -540,12 +541,13 @@ class MacDockRenderer {
         if (!this._items.length || (this._dock._slider?.slideX ?? 1) <= 0.02)
             return false;
 
+        const orderedItems = this._orderedItems();
+        const [first] = orderedItems;
+        const last = orderedItems.at(-1);
         const horizontal = this._dock.isHorizontal;
-        const first = this._items[0];
-        const last = this._items[this._items.length - 1];
         const maxScale = 1 + Math.max(0, this._settings.get_double('macos-magnification'));
         const radius = Math.max(32, this._settings.get_double('macos-magnification-radius'));
-        const baseSize = Math.max(...this._items.map(item => item.baseSize));
+        const baseSize = Math.max(...orderedItems.map(item => item.baseSize));
         const inwardReach = baseSize * maxScale * 0.62 + 16;
         const outwardReach = baseSize * 0.65 + 16;
 
@@ -554,8 +556,8 @@ class MacDockRenderer {
                 pointerX > last.baseCenterX + radius)
                 return false;
 
-            const centerY = this._items.reduce((sum, item) =>
-                sum + item.baseCenterY, 0) / this._items.length;
+            const centerY = orderedItems.reduce((sum, item) =>
+                sum + item.baseCenterY, 0) / orderedItems.length;
             if (this._dock.position === St.Side.BOTTOM) {
                 return pointerY >= centerY - inwardReach &&
                     pointerY <= centerY + outwardReach;
@@ -568,8 +570,8 @@ class MacDockRenderer {
             pointerY > last.baseCenterY + radius)
             return false;
 
-        const centerX = this._items.reduce((sum, item) =>
-            sum + item.baseCenterX, 0) / this._items.length;
+        const centerX = orderedItems.reduce((sum, item) =>
+            sum + item.baseCenterX, 0) / orderedItems.length;
         if (this._dock.position === St.Side.LEFT) {
             return pointerX >= centerX - outwardReach &&
                 pointerX <= centerX + inwardReach;
@@ -583,9 +585,10 @@ class MacDockRenderer {
         const pointerAxis = horizontal ? pointerX : pointerY;
         const maxScale = 1 + Math.max(0, this._settings.get_double('macos-magnification'));
         const radius = Math.max(32, this._settings.get_double('macos-magnification-radius'));
+        const orderedItems = this._orderedItems();
         const growth = [];
 
-        for (const item of this._items) {
+        for (const item of orderedItems) {
             const center = horizontal ? item.baseCenterX : item.baseCenterY;
             const distance = Math.abs(center - pointerAxis);
             let influence = 0;
@@ -604,11 +607,11 @@ class MacDockRenderer {
         // growth on its left minus half of all extra growth on its right.
         // There is no discrete "nearest icon" anchor, so crossing icon
         // boundaries cannot make the wave jump.
-        let totalGrowth = growth.reduce((sum, value) => sum + value, 0);
+        const totalGrowth = growth.reduce((sum, value) => sum + value, 0);
         let leftGrowth = 0;
-        for (let i = 0; i < this._items.length; i++) {
+        for (let i = 0; i < orderedItems.length; i++) {
             const rightGrowth = totalGrowth - leftGrowth - growth[i];
-            this._items[i].targetOffset = active
+            orderedItems[i].targetOffset = active
                 ? 0.5 * (leftGrowth - rightGrowth)
                 : 0;
             leftGrowth += growth[i];
@@ -642,7 +645,7 @@ class MacDockRenderer {
         const horizontal = this._dock.isHorizontal;
 
         for (const item of this._items) {
-            const scale = item.scale;
+            const {scale} = item;
             const baseTextureScale = item.baseSize / item.textureSize;
             const renderScale = baseTextureScale * scale;
             let centerX = item.baseCenterX;
@@ -696,16 +699,24 @@ class MacDockRenderer {
             item.source.opacity = 1;
 
             const visualSize = item.baseSize * scale;
-            const visualCenterX = this._dock.position === St.Side.LEFT
-                ? item.baseCenterX - item.baseSize / 2 + visualSize / 2
-                : this._dock.position === St.Side.RIGHT
-                    ? item.baseCenterX + item.baseSize / 2 - visualSize / 2
-                    : centerX;
-            const visualCenterY = this._dock.position === St.Side.TOP
-                ? item.baseCenterY - item.baseSize / 2 + visualSize / 2
-                : this._dock.position === St.Side.BOTTOM
-                    ? item.baseCenterY + item.baseSize / 2 - visualSize / 2
-                    : centerY;
+            let visualCenterX = centerX;
+            let visualCenterY = centerY;
+            switch (this._dock.position) {
+            case St.Side.TOP:
+                visualCenterY = item.baseCenterY - item.baseSize / 2 + visualSize / 2;
+                break;
+            case St.Side.LEFT:
+                visualCenterX = item.baseCenterX - item.baseSize / 2 + visualSize / 2;
+                break;
+            case St.Side.RIGHT:
+                visualCenterX = item.baseCenterX + item.baseSize / 2 - visualSize / 2;
+                break;
+            case St.Side.BOTTOM:
+            default:
+                visualCenterY = item.baseCenterY + item.baseSize / 2 - visualSize / 2;
+                break;
+            }
+
             item.visualRect = {
                 x: visualCenterX - visualSize / 2,
                 y: visualCenterY - visualSize / 2,
@@ -713,11 +724,11 @@ class MacDockRenderer {
                 height: visualSize,
             };
 
-            this._paintRunningDot(item, centerX, centerY, visualSize);
+            this._paintRunningDot(item, centerX, centerY);
         }
     }
 
-    _paintRunningDot(item, centerX, centerY, visualSize) {
+    _paintRunningDot(item, centerX, centerY) {
         if (item.kind !== 'app' || !item.source.running) {
             item.dot.hide();
             return;
@@ -746,9 +757,6 @@ class MacDockRenderer {
 
         item.dot.set_position(Math.round(x), Math.round(y));
         item.dot.opacity = item.source.focused ? 255 : 205;
-
-        // Keep the indicator stable like macOS; it does not scale with the icon.
-        void visualSize;
     }
 
     _pivotForPosition() {
@@ -790,7 +798,6 @@ class MacDockRenderer {
         const height = Math.max(1, Math.round(maxY - minY + MATERIAL_MARGIN * 2));
         this._material.set_position(x, y);
         this._material.set_size(width, height);
-        this._material.lower_bottom();
     }
 
     _updateMaterialStyle() {
@@ -824,7 +831,7 @@ class MacDockRenderer {
                 brightness: 0.88,
             });
             this._material.add_effect_with_name('macos-dock-blur', blur);
-        } catch (_) {
+        } catch {
             // Blur is optional. Keep the translucent GPU-composited material if
             // a particular Shell version does not expose background blur here.
         }
@@ -868,7 +875,7 @@ class MacDockRenderer {
                 item.source.set_scale(1, 1);
                 item.item.translationX = item.originalItemTranslationX ?? 0;
                 item.item.translationY = item.originalItemTranslationY ?? 0;
-            } catch (_) {
+            } catch {
                 // Source may disappear during drag/drop redisplay.
             }
         }
@@ -881,7 +888,7 @@ class MacDockRenderer {
         let type;
         try {
             type = event.type();
-        } catch (_) {
+        } catch {
             return Clutter.EVENT_PROPAGATE;
         }
         if (type !== Clutter.EventType.BUTTON_PRESS)
