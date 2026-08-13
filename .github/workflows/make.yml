@@ -9,6 +9,7 @@ name: Build & Package
       - ubuntu-dock
       - make_ci
       - feature/macos-interactions-v114
+      - feature/macos-thumbnail-fisheye-v115
 
 permissions:
   contents: read
@@ -39,6 +40,7 @@ jobs:
           node --check extension.js
           node --check macDockEffects.js
           node --check macDockInteractions.js
+          node --check macThumbnailFisheye.js
           node --check macPrefs.js
           node --check prefs.js
 
@@ -54,6 +56,7 @@ jobs:
           test -f _build/extension.js
           test -f _build/macDockEffects.js
           test -f _build/macDockInteractions.js
+          test -f _build/macThumbnailFisheye.js
           test -f _build/macPrefs.js
           test -f _build/prefs.js
           test -f _build/stylesheet.css
@@ -64,22 +67,20 @@ jobs:
       - name: Write build summary
         run: |
           {
-            echo '## Dash to Dock — macOS Native v114'
+            echo '## Dash to Dock — macOS Native v115'
             echo ''
-            echo 'Download the **dash-to-dock-macos-native-v114-interactions** artifact below.'
+            echo 'Download the **dash-to-dock-macos-native-v115-thumbnail-fisheye** artifact below.'
             echo ''
-            echo '- launch bounce until a main window appears'
-            echo '- persistent slow alert bounce for urgent background apps'
-            echo '- live minimized-window thumbnail tray after the divider'
-            echo '- external file-drag compatibility highlighting'
-            echo '- contextual recent-file and window-control quick menus'
-            echo '- v113 fish-eye/material renderer unchanged'
+            echo '- minimized windows participate in configured fish-eye magnification'
+            echo '- same raised-cosine field and damped spring as normal Dock items'
+            echo '- edge-anchored scaling with dynamic tray spacing'
+            echo '- v114 interactions and v113 renderer remain unchanged'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload ready-to-install extension
         uses: actions/upload-artifact@v4
         with:
-          name: dash-to-dock-macos-native-v114-interactions
+          name: dash-to-dock-macos-native-v115-thumbnail-fisheye
           path: _build/
           if-no-files-found: error
           retention-days: 30
