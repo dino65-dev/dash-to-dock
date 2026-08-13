@@ -42,20 +42,20 @@
 
     <key type="b" name="macos-glass-blur">
       <default>true</default>
-      <summary>Enable dock background blur</summary>
-      <description>Use Shell background blur for the small dock material when the running GNOME Shell exposes it.</description>
+      <summary>Enable frosted glass blur</summary>
+      <description>Use GNOME Shell compositor background blur for the small dock material.</description>
     </key>
     <key type="i" name="macos-glass-radius">
-      <default>24</default>
+      <default>28</default>
       <range min="0" max="64"/>
       <summary>Glass blur radius</summary>
-      <description>Blur radius of the dock background material.</description>
+      <description>Blur radius of the frosted dock background.</description>
     </key>
     <key type="d" name="macos-glass-opacity">
       <default>0.62</default>
       <range min="0.05" max="0.95"/>
-      <summary>Glass opacity</summary>
-      <description>Opacity of the translucent dark dock material.</description>
+      <summary>Fallback glass opacity</summary>
+      <description>Panel opacity used when adaptive light and dark material is disabled.</description>
     </key>
     <key type="d" name="macos-corner-radius">
       <default>18.0</default>
@@ -64,12 +64,72 @@
       <description>Corner radius of the floating dock material.</description>
     </key>
 
+    <key type="b" name="macos-adaptive-dark">
+      <default>true</default>
+      <summary>Adapt material to system light and dark mode</summary>
+      <description>Use a light frosted material in light mode and translucent charcoal in dark mode.</description>
+    </key>
+    <key type="d" name="macos-light-opacity">
+      <default>0.42</default>
+      <range min="0.10" max="0.90"/>
+      <summary>Light mode material opacity</summary>
+      <description>Opacity of the light frosted material when adaptive appearance is enabled.</description>
+    </key>
+    <key type="d" name="macos-dark-opacity">
+      <default>0.58</default>
+      <range min="0.10" max="0.95"/>
+      <summary>Dark mode material opacity</summary>
+      <description>Opacity of the charcoal material when adaptive appearance is enabled.</description>
+    </key>
+
+    <key type="b" name="macos-dynamic-border">
+      <default>true</default>
+      <summary>Enable contrast-adaptive border</summary>
+      <description>Use a thin light border on dark material and a thin dark border on light material.</description>
+    </key>
+    <key type="d" name="macos-border-opacity">
+      <default>0.24</default>
+      <range min="0.0" max="0.70"/>
+      <summary>Adaptive border opacity</summary>
+      <description>Opacity of the one-pixel contrast-adaptive dock border.</description>
+    </key>
+
+    <key type="b" name="macos-reflection">
+      <default>true</default>
+      <summary>Enable reflective shelf</summary>
+      <description>Show a subtle mirrored clone of application icons on the dock surface when the dock is on the bottom edge.</description>
+    </key>
+    <key type="d" name="macos-reflection-opacity">
+      <default>0.16</default>
+      <range min="0.0" max="0.40"/>
+      <summary>Reflection opacity</summary>
+      <description>Maximum opacity of the mirrored icon reflection.</description>
+    </key>
+    <key type="d" name="macos-reflection-height">
+      <default>0.18</default>
+      <range min="0.05" max="0.35"/>
+      <summary>Reflection depth</summary>
+      <description>Vertical compression factor of the mirrored icon reflection.</description>
+    </key>
+
+    <key type="b" name="macos-divider">
+      <default>true</default>
+      <summary>Enable persistent structural divider</summary>
+      <description>Draw a separator before mounted locations, files, folders and Trash instead of using the favorites-versus-running-app divider.</description>
+    </key>
+    <key type="d" name="macos-divider-opacity">
+      <default>0.32</default>
+      <range min="0.05" max="0.80"/>
+      <summary>Divider opacity</summary>
+      <description>Opacity of the structural divider line.</description>
+    </key>
+
     <!-- Kept for compatibility with the first experimental prototype. -->
     <key type="d" name="macos-spread">
       <default>0.42</default>
       <range min="0.0" max="1.5"/>
       <summary>Legacy spread control</summary>
-      <description>Compatibility key from the first prototype. The native renderer now derives spacing directly from icon growth and does not use an arbitrary spread multiplier.</description>
+      <description>Compatibility key from the first prototype. The native renderer derives spacing directly from icon growth and does not use an arbitrary spread multiplier.</description>
     </key>
     <key type="i" name="macos-animation-duration">
       <default>90</default>
