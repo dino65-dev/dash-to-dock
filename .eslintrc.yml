@@ -31,5 +31,9 @@ overrides:
           imports: always-multiline
           functions: never
 
+  - files: ./extension.js
+    rules:
+      no-extra-parens: 0
+
 parserOptions:
   sourceType: module
