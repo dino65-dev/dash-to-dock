@@ -23,6 +23,7 @@ EXTRA_MODULES = \
                 windowPreview.js \
                 intellihide.js \
                 macDockEffects.js \
+                macPrefs.js \
                 prefs.js \
                 theming.js \
                 utils.js \
@@ -90,7 +91,7 @@ ifeq ($(SASS), ruby)
 else ifeq ($(SASS), dart)
 	sass --no-source-map _stylesheet.scss stylesheet.css
 else ifeq ($(SASS), sassc)
-	sassc --omit-map-comment _stylesheet.scss stylesheet.css
+	sassc --omit-map-comment --scss _stylesheet.scss stylesheet.css
 else
 	sassc --omit-map-comment _stylesheet.scss stylesheet.css
 endif
