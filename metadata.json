@@ -9,10 +9,10 @@
     "51"
 ],
 "uuid": "dash-to-dock@micxgx.gmail.com",
-"name": "Dash to Dock",
-"description": "A dock for the Gnome Shell. This extension moves the dash out of the overview transforming it in a dock for an easier launching of applications and a faster switching between windows and desktops. Side and bottom placement options are available.",
+"name": "Dash to Dock — macOS Native Test",
+"description": "Experimental macOS-style native compositor renderer for Dash to Dock, with high-resolution fish-eye magnification, spring motion and elastic glass material.",
 "original-author": "micxgx@gmail.com",
-"url": "https://micheleg.github.io/dash-to-dock/",
+"url": "https://github.com/dino65-dev/dash-to-dock",
 "gettext-domain": "dashtodock",
-"version": 106
+"version": 107
 }
