@@ -7,6 +7,14 @@ import {
 
 import {Main} from './dependencies/shell/ui.js';
 
+const MACOS_SCHEMA = 'org.gnome.shell.extensions.dash-to-dock.macos';
+const MACOS_BACKGROUND_STYLE = [
+    'border-radius: 22px',
+    'border-width: 1px',
+    'border-color: rgba(255, 255, 255, 0.14)',
+    'box-shadow: 0 8px 24px 0 rgba(0, 0, 0, 0.28)',
+].join('; ');
+
 /**
  * Optional macOS-inspired presentation layer for Dash to Dock.
  *
@@ -18,11 +26,11 @@ import {Main} from './dependencies/shell/ui.js';
 export class MacDockEffects {
     constructor(dockManager) {
         this._dockManager = dockManager;
+        this._settings = dockManager.extension.getSettings(MACOS_SCHEMA);
         this._controllers = new Map();
 
         this._docksReadyId = dockManager.connect('docks-ready', () => this._sync());
-        this._settingsChangedId = dockManager.settings.connect(
-            'changed::macos-style', () => this._sync());
+        this._settingsChangedId = this._settings.connect('changed::macos-style', () => this._sync());
 
         this._sync();
     }
@@ -34,11 +42,12 @@ export class MacDockEffects {
         if (this._docksReadyId)
             this._dockManager.disconnect(this._docksReadyId);
         if (this._settingsChangedId)
-            this._dockManager.settings.disconnect(this._settingsChangedId);
+            this._settings.disconnect(this._settingsChangedId);
 
         for (const controller of this._controllers.values())
             controller.destroy();
         this._controllers.clear();
+        this._settings = null;
         this._dockManager = null;
     }
 
@@ -46,7 +55,7 @@ export class MacDockEffects {
         if (!this._dockManager)
             return;
 
-        const enabled = this._dockManager.settings.macosStyle;
+        const enabled = this._settings.macosStyle;
         const docks = this._dockManager._allDocks ?? [];
 
         for (const [dock, controller] of this._controllers) {
@@ -63,7 +72,7 @@ export class MacDockEffects {
             if (this._controllers.has(dock))
                 continue;
 
-            const controller = new DockMagnifier(dock, this._dockManager.settings);
+            const controller = new DockMagnifier(dock, this._settings);
             controller.enable();
             this._controllers.set(dock, controller);
         }
@@ -76,6 +85,8 @@ class DockMagnifier {
         this._settings = settings;
         this._eventActor = dock._box;
         this._itemsActor = dock.dash._box;
+        this._backgroundActor = dock.dash._background;
+        this._originalBackgroundStyle = null;
         this._dragging = false;
         this._inside = false;
         this._connections = [];
@@ -83,6 +94,7 @@ class DockMagnifier {
 
     enable() {
         this._dock.add_style_class_name('macos-style');
+        this._applyMacStyle();
 
         // The outer dock box is already reactive and receives pointer events on
         // both X11 and Wayland. No compositor-specific pointer API is required.
@@ -128,6 +140,7 @@ class DockMagnifier {
 
     destroy() {
         this._restore(true);
+        this._restoreMacStyle();
         this._dock?.remove_style_class_name('macos-style');
 
         for (const [actor, id] of this._connections) {
@@ -143,11 +156,31 @@ class DockMagnifier {
         this._settings = null;
         this._eventActor = null;
         this._itemsActor = null;
+        this._backgroundActor = null;
     }
 
     _connect(actor, signal, callback) {
         const id = actor.connect(signal, callback);
         this._connections.push([actor, id]);
+    }
+
+    _applyMacStyle() {
+        if (!this._backgroundActor)
+            return;
+
+        this._originalBackgroundStyle = this._backgroundActor.get_style();
+        const currentStyle = this._originalBackgroundStyle?.trim() ?? '';
+        const separator = currentStyle && !currentStyle.endsWith(';') ? '; ' : ' ';
+        this._backgroundActor.set_style(
+            `${currentStyle}${separator}${MACOS_BACKGROUND_STYLE};`);
+    }
+
+    _restoreMacStyle() {
+        if (!this._backgroundActor)
+            return;
+
+        this._backgroundActor.set_style(this._originalBackgroundStyle);
+        this._originalBackgroundStyle = null;
     }
 
     _getItems() {
@@ -178,6 +211,7 @@ class DockMagnifier {
         // so influence is already very small at the configured radius.
         const sigma = radius / 2.15;
         const twoSigmaSquared = 2 * sigma * sigma;
+        const [stageX, stageY] = this._itemsActor.get_transformed_position();
 
         const samples = [];
         let nearestIndex = -1;
@@ -186,7 +220,6 @@ class DockMagnifier {
         for (let i = 0; i < items.length; i++) {
             const {item} = items[i];
             const box = item.get_allocation_box();
-            const [stageX, stageY] = this._itemsActor.get_transformed_position();
             const center = horizontal
                 ? stageX + (box.x1 + box.x2) / 2
                 : stageY + (box.y1 + box.y2) / 2;
@@ -204,7 +237,6 @@ class DockMagnifier {
             const baseSize = horizontal ? item.width : item.height;
 
             samples.push({
-                center,
                 influence,
                 scale,
                 growth: Math.max(0, baseSize * (scale - 1) * spread),
