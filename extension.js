@@ -13,7 +13,7 @@ export default class DashToDockExtension extends Extension.Extension {
         // See: https://gitlab.gnome.org/GNOME/gnome-shell/-/merge_requests/4214
         this._shutdownID = global.connect('shutdown', () => this.disable());
         dockManager = new DockManager(this);
-        this._macDockEffects = new MacDockEffects(dockManager);
+        this._macDockEffects = new MacDockEffects(dockManager, this);
     }
 
     disable() {
