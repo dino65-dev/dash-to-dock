@@ -6,11 +6,23 @@ import {MacThumbnailFisheye as MacThumbnailFisheyeBase}
     from './macThumbnailFisheyeBase.js';
 
 /**
- * v116 keeps the green v115 fish-eye implementation intact and overrides only
- * thumbnail construction so restore/raise/focus happens through Mutter's single
- * activation path instead of a separate unminimize followed by activation.
+ * v117 keeps the green v115 fish-eye implementation and v116 activation fix,
+ * while making detached minimized-window thumbnails participate in the Dock's
+ * real hover/autohide lifecycle.
+ *
+ * The thumbnails live in the full-screen macOS compositor layer rather than
+ * inside dock._box, so Dash-to-Dock cannot see them through dock._box.hover.
+ * While any thumbnail is hovered we temporarily extend the native hover state
+ * and requiresVisibility flag. On leave we resync the native hover from the
+ * actual pointer and hand visibility back to Dash-to-Dock.
  */
 export class MacThumbnailFisheye extends MacThumbnailFisheyeBase {
+    destroy() {
+        this._releaseAllDockHoverPins();
+        super.destroy();
+        this._dockHoverPins?.clear?.();
+    }
+
     _createThumbnail(renderer, window) {
         const source = window.get_compositor_private?.();
         if (!source)
@@ -55,6 +67,16 @@ export class MacThumbnailFisheye extends MacThumbnailFisheyeBase {
             }
         });
 
+        actor.connect('notify::hover', () => {
+            this._setThumbnailHover(renderer, actor, actor.hover);
+            renderer._wake?.();
+        });
+        actor.connect('destroy', () => {
+            // A clicked thumbnail can be destroyed immediately when its window
+            // is restored, before Clutter has emitted a final hover=false.
+            this._setThumbnailHover(renderer, actor, false);
+        });
+
         for (const signal of ['enter-event', 'motion-event', 'leave-event']) {
             actor.connect(signal, () => {
                 renderer._wake?.();
@@ -70,5 +92,127 @@ export class MacThumbnailFisheye extends MacThumbnailFisheyeBase {
             targetScale: 1,
         });
         return preview;
+    }
+
+    _applyFisheye(renderer, state) {
+        // MacDockInteractions lays its detached previews out after the normal
+        // renderer has painted, so it can accidentally re-show a preview even
+        // after macDockEffects has reached the final hidden state. Make hidden
+        // authoritative here and reset the spring so the next reveal starts
+        // cleanly from 1x instead of from a stale magnified transform.
+        if (renderer._isDockFullyHidden?.()) {
+            this._releaseDockHoverPin(renderer);
+            for (const preview of state?.thumbnails?.values?.() ?? []) {
+                try {
+                    preview.actor.remove_all_transitions?.();
+                    preview.actor.set_scale(1, 1);
+                    preview.actor.hide();
+                } catch {
+                    // Preview may disappear while its window is being restored.
+                }
+
+                const previewState = this._previewStates.get(preview);
+                if (previewState) {
+                    previewState.scale = 1;
+                    previewState.velocity = 0;
+                    previewState.targetScale = 1;
+                }
+            }
+            return;
+        }
+
+        super._applyFisheye(renderer, state);
+    }
+
+    _setThumbnailHover(renderer, actor, hovering) {
+        const dock = renderer?._dock;
+        const dash = dock?.dash;
+        const box = dock?._box;
+        if (!dock || !dash || !box)
+            return;
+
+        this._dockHoverPins ??= new Map();
+        let pin = this._dockHoverPins.get(renderer);
+
+        if (!hovering) {
+            // Do not create bookkeeping for destroy/leave events after the pin
+            // was already released during extension shutdown or window restore.
+            if (!pin)
+                return;
+
+            pin.actors.delete(actor);
+            if (!pin.actors.size)
+                this._releaseDockHoverPin(renderer, pin);
+            return;
+        }
+
+        if (!pin) {
+            pin = {
+                actors: new Set(),
+                previousRequiresVisibility: !!dash.requiresVisibility,
+                previousVisibilityWasTimed: !!dash._requiresVisibilityTimeout,
+            };
+            this._dockHoverPins.set(renderer, pin);
+        }
+
+        pin.actors.add(actor);
+
+        // Extend Dash-to-Dock's native hover region instead of adding a custom
+        // autohide timer. set_hover() is an St.Widget API, and sync_hover() below
+        // restores the real pointer-derived state when the thumbnail is left.
+        box.set_hover?.(true);
+
+        // requiresVisibility is Dash-to-Dock's existing higher-priority keep-open
+        // property. It also covers intellihide-only configurations where hover by
+        // itself is intentionally ignored.
+        if (!dash.requiresVisibility)
+            dash.requiresVisibility = true;
+
+        // Cancel an already-started hide transition immediately if the pointer
+        // crossed from the native Dock allocation into the detached thumbnail.
+        dock._show?.();
+        renderer._wake?.();
+    }
+
+    _releaseDockHoverPin(renderer, knownPin = null) {
+        const pin = knownPin ?? this._dockHoverPins?.get(renderer);
+        if (!pin)
+            return;
+
+        const dock = renderer?._dock;
+        const dash = dock?.dash;
+        const box = dock?._box;
+
+        this._dockHoverPins?.delete(renderer);
+
+        if (!dock || !dash || !box)
+            return;
+
+        // Recompute hover from the actual stage pointer. This emits the same
+        // notify::hover transition the normal Dock relies on for its hide delay.
+        box.sync_hover?.();
+
+        // Do not clear another subsystem's visibility request. Dash-to-Dock's
+        // built-in urgent-app hold uses _requiresVisibilityTimeout; a non-timed
+        // pre-existing true value is also preserved for forward compatibility.
+        const timedVisibilityStillActive = !!dash._requiresVisibilityTimeout;
+        const preserveUntimedVisibility =
+            pin.previousRequiresVisibility && !pin.previousVisibilityWasTimed;
+        const shouldRemainRequired =
+            timedVisibilityStillActive || preserveUntimedVisibility;
+
+        if (dash.requiresVisibility !== shouldRemainRequired)
+            dash.requiresVisibility = shouldRemainRequired;
+
+        dock._updateDashVisibility?.();
+        renderer._wake?.();
+    }
+
+    _releaseAllDockHoverPins() {
+        if (!this._dockHoverPins)
+            return;
+
+        for (const renderer of [...this._dockHoverPins.keys()])
+            this._releaseDockHoverPin(renderer);
     }
 }
