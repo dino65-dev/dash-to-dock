@@ -11,6 +11,7 @@ name: Build & Package
       - feature/macos-interactions-v114
       - feature/macos-thumbnail-fisheye-v115
       - feature/macos-thumbnail-activation-v116
+      - feature/macos-thumbnail-hover-v117
 
 permissions:
   contents: read
@@ -70,20 +71,21 @@ jobs:
       - name: Write build summary
         run: |
           {
-            echo '## Dash to Dock — macOS Native v116'
+            echo '## Dash to Dock — macOS Native v117'
             echo ''
-            echo 'Download the **dash-to-dock-macos-native-v116-thumbnail-activation** artifact below.'
+            echo 'Download the **dash-to-dock-macos-native-v117-thumbnail-hover** artifact below.'
             echo ''
-            echo '- minimized thumbnail activation follows Mutter restore/raise/focus path'
-            echo '- real click timestamp is forwarded to GNOME focus-stealing prevention'
-            echo '- v115 thumbnail fish-eye implementation preserved as an unchanged base module'
-            echo '- v114 interactions and v113 renderer remain unchanged'
+            echo '- minimized thumbnails extend the native Dock hover/autohide state'
+            echo '- stationary pointer over a thumbnail keeps the Dock visible indefinitely'
+            echo '- leaving a thumbnail resynchronizes real pointer hover and normal hide delay'
+            echo '- final HIDDEN state force-hides/resets detached thumbnails'
+            echo '- v116 activation, v115 fish-eye base, v114 interactions and v113 renderer unchanged'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload ready-to-install extension
         uses: actions/upload-artifact@v4
         with:
-          name: dash-to-dock-macos-native-v116-thumbnail-activation
+          name: dash-to-dock-macos-native-v117-thumbnail-hover
           path: _build/
           if-no-files-found: error
           retention-days: 30
