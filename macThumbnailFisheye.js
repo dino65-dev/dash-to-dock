@@ -249,7 +249,7 @@ export class MacThumbnailFisheye extends MacThumbnailFisheyeBase {
         if (this._floatingGapId)
             settings?.disconnect?.(this._floatingGapId);
 
-        for (const dock of [...(this._floatingDockStates?.keys?.() ?? [])])
+        for (const dock of [...this._floatingDockStates?.keys?.() ?? []])
             this._detachFloatingDock(dock, true);
 
         this._floatingDockStates?.clear?.();
