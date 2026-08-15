@@ -2,9 +2,9 @@
 "shell-version": ["45", "46", "47", "48", "49", "50", "51"],
 "uuid": "dash-to-dock@micxgx.gmail.com",
 "name": "Dash to Dock — macOS Native",
-"description": "Dash to Dock with an optional native macOS-style compositor renderer: fish-eye magnification, spring motion, seamless rounded material, launch and alert bouncing, live minimized-window trays with native fish-eye zoom and native autohide hover, file-drag feedback and contextual quick menus.",
+"description": "Dash to Dock with an optional native macOS-style compositor renderer: fish-eye magnification, spring motion, seamless rounded material, launch and alert bouncing, live minimized-window trays with native fish-eye zoom, native autohide hover and a geometry-level floating edge gap, file-drag feedback and contextual quick menus.",
 "original-author": "micxgx@gmail.com",
 "url": "https://github.com/dino65-dev/dash-to-dock",
 "gettext-domain": "dashtodock",
-"version": 117
+"version": 118
 }
