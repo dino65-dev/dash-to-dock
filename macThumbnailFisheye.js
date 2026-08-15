@@ -6,9 +6,9 @@ import {MacThumbnailFisheye as MacThumbnailFisheyeBase}
     from './macThumbnailFisheyeBase.js';
 
 /**
- * v117 keeps the green v115 fish-eye implementation and v116 activation fix,
- * while making detached minimized-window thumbnails participate in the Dock's
- * real hover/autohide lifecycle.
+ * v118 keeps the green v115 fish-eye implementation plus the v116/v117
+ * activation and hover fixes, and makes the floating edge gap part of the
+ * native Dash-to-Dock geometry so every downstream visual shares one origin.
  *
  * The thumbnails live in the full-screen macOS compositor layer rather than
  * inside dock._box, so Dash-to-Dock cannot see them through dock._box.hover.
@@ -17,8 +17,14 @@ import {MacThumbnailFisheye as MacThumbnailFisheyeBase}
  * actual pointer and hand visibility back to Dash-to-Dock.
  */
 export class MacThumbnailFisheye extends MacThumbnailFisheyeBase {
+    constructor(interactions) {
+        super(interactions);
+        this._installFloatingGeometry();
+    }
+
     destroy() {
         this._releaseAllDockHoverPins();
+        this._removeFloatingGeometry();
         super.destroy();
         this._dockHoverPins?.clear?.();
     }
@@ -214,5 +220,146 @@ export class MacThumbnailFisheye extends MacThumbnailFisheyeBase {
 
         for (const renderer of [...this._dockHoverPins.keys()])
             this._releaseDockHoverPin(renderer);
+    }
+
+    _installFloatingGeometry() {
+        const manager = this._interactions?._dockManager;
+        const settings = this._settings;
+        if (!manager || !settings)
+            return;
+
+        this._floatingDockStates = new Map();
+        this._floatingDocksReadyId = manager.connect(
+            'docks-ready', () => this._syncFloatingDocks());
+        this._floatingStyleId = settings.connect(
+            'changed::macos-style', () => this._refreshFloatingDocks());
+        this._floatingGapId = settings.connect(
+            'changed::macos-floating-gap', () => this._refreshFloatingDocks());
+        this._syncFloatingDocks();
+    }
+
+    _removeFloatingGeometry() {
+        const manager = this._interactions?._dockManager;
+        const settings = this._settings;
+
+        if (this._floatingDocksReadyId)
+            manager?.disconnect?.(this._floatingDocksReadyId);
+        if (this._floatingStyleId)
+            settings?.disconnect?.(this._floatingStyleId);
+        if (this._floatingGapId)
+            settings?.disconnect?.(this._floatingGapId);
+
+        for (const dock of [...(this._floatingDockStates?.keys?.() ?? [])])
+            this._detachFloatingDock(dock, true);
+
+        this._floatingDockStates?.clear?.();
+        this._floatingDockStates = null;
+        this._floatingDocksReadyId = 0;
+        this._floatingStyleId = 0;
+        this._floatingGapId = 0;
+    }
+
+    _syncFloatingDocks() {
+        const manager = this._interactions?._dockManager;
+        if (!manager || !this._floatingDockStates)
+            return;
+
+        const docks = manager._allDocks ?? [];
+        for (const dock of [...this._floatingDockStates.keys()]) {
+            if (!docks.includes(dock))
+                this._detachFloatingDock(dock, false);
+        }
+
+        for (const dock of docks) {
+            if (!this._floatingDockStates.has(dock))
+                this._attachFloatingDock(dock);
+        }
+
+        this._refreshFloatingDocks();
+    }
+
+    _attachFloatingDock(dock) {
+        const originalResetPosition = dock?._resetPosition;
+        if (typeof originalResetPosition !== 'function')
+            return;
+
+        const state = {originalResetPosition};
+        this._floatingDockStates.set(dock, state);
+        dock._resetPosition = (...args) => {
+            const result = state.originalResetPosition.apply(dock, args);
+            this._applyFloatingOffset(dock);
+            return result;
+        };
+    }
+
+    _detachFloatingDock(dock, restoreGeometry) {
+        const state = this._floatingDockStates?.get(dock);
+        if (!state)
+            return;
+
+        try {
+            dock._resetPosition = state.originalResetPosition;
+            if (restoreGeometry) {
+                state.originalResetPosition.call(dock);
+                dock._updateStaticBox?.();
+            }
+        } catch {
+            // A dock removed during monitor rebuild may already be destroyed.
+        }
+
+        this._floatingDockStates.delete(dock);
+    }
+
+    _refreshFloatingDocks() {
+        if (!this._floatingDockStates)
+            return;
+
+        for (const dock of this._floatingDockStates.keys()) {
+            try {
+                // Always start from canonical Dash-to-Dock geometry before
+                // applying one inset, so work-area/settings changes cannot
+                // accumulate or drift the dock toward the center.
+                dock._resetPosition();
+            } catch {
+                // Dock may disappear during monitor rebuild.
+            }
+        }
+
+        for (const renderer of this._interactions?._macEffects?._renderers?.values?.() ?? []) {
+            renderer._materialRect = null;
+            renderer._wake?.();
+        }
+    }
+
+    _applyFloatingOffset(dock) {
+        if (!this._settings?.get_boolean('macos-style'))
+            return;
+
+        const gap = Math.max(0, Math.min(32,
+            this._settings.get_int('macos-floating-gap')));
+        if (!gap)
+            return;
+
+        switch (dock.position) {
+        case St.Side.TOP:
+            dock.y += gap;
+            break;
+        case St.Side.LEFT:
+            dock.x += gap;
+            break;
+        case St.Side.RIGHT:
+            dock.x -= gap;
+            break;
+        case St.Side.BOTTOM:
+        default:
+            dock.y -= gap;
+            break;
+        }
+
+        // _staticBox is what Dash-to-Dock uses for intellihide and for the
+        // edge-to-dock safe corridor after a pressure/dwell reveal. Updating it
+        // here keeps the real edge barrier at the screen while the shown dock
+        // can float inward without creating a dead hover gap.
+        dock._updateStaticBox?.();
     }
 }
