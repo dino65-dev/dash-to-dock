@@ -1,6 +1,6 @@
 # Dash to Dock — macOS Native
 
-![screenshot](https://github.com/micheleg/dash-to-dock/raw/master/media/screenshot.jpg)
+![screenshot](https://github.com/dino65-dev/dash-to-dock/blob/master/Screenshot%20from%202026-08-16%2000-57-03.png)
 
 ## A dock for GNOME Shell
 
