@@ -1,20 +1,20 @@
 // -*- mode: js; js-indent-level: 4; indent-tabs-mode: nil -*-
 
-import {Clutter, St} from './dependencies/gi.js';
+import {Clutter, GLib, St} from './dependencies/gi.js';
 import {Main} from './dependencies/shell/ui.js';
 import {MacThumbnailFisheye as MacThumbnailFisheyeBase}
     from './macThumbnailFisheyeBase.js';
 
 /**
- * v118 keeps the green v115 fish-eye implementation plus the v116/v117
- * activation and hover fixes, and makes the floating edge gap part of the
- * native Dash-to-Dock geometry so every downstream visual shares one origin.
+ * v120 keeps the green v115 fish-eye implementation plus the v116/v117
+ * activation and hover fixes. Floating geometry is maintained as a lifecycle
+ * invariant instead of monkeypatching Dash-to-Dock's _resetPosition method.
  *
- * The thumbnails live in the full-screen macOS compositor layer rather than
- * inside dock._box, so Dash-to-Dock cannot see them through dock._box.hover.
- * While any thumbnail is hovered we temporarily extend the native hover state
- * and requiresVisibility flag. On leave we resync the native hover from the
- * actual pointer and hand visibility back to Dash-to-Dock.
+ * Dash-to-Dock binds some _resetPosition callbacks during construction, so a
+ * later method replacement cannot intercept every startup/work-area reset.
+ * Instead we observe the dock's real x/y lifecycle, recompute an absolute
+ * edge-relative target, and explicitly invalidate Shell's chrome input region.
+ * This keeps visual items and the native Trash/Show Apps hit targets aligned.
  */
 export class MacThumbnailFisheye extends MacThumbnailFisheyeBase {
     constructor(interactions) {
@@ -229,12 +229,14 @@ export class MacThumbnailFisheye extends MacThumbnailFisheyeBase {
             return;
 
         this._floatingDockStates = new Map();
+        this._floatingRefreshId = 0;
         this._floatingDocksReadyId = manager.connect(
             'docks-ready', () => this._syncFloatingDocks());
         this._floatingStyleId = settings.connect(
-            'changed::macos-style', () => this._refreshFloatingDocks());
+            'changed::macos-style', () => this._queueFloatingRefresh());
         this._floatingGapId = settings.connect(
-            'changed::macos-floating-gap', () => this._refreshFloatingDocks());
+            'changed::macos-floating-gap', () => this._queueFloatingRefresh());
+
         this._syncFloatingDocks();
     }
 
@@ -248,7 +250,10 @@ export class MacThumbnailFisheye extends MacThumbnailFisheyeBase {
             settings?.disconnect?.(this._floatingStyleId);
         if (this._floatingGapId)
             settings?.disconnect?.(this._floatingGapId);
+        if (this._floatingRefreshId)
+            GLib.source_remove(this._floatingRefreshId);
 
+        this._floatingRefreshId = 0;
         for (const dock of [...this._floatingDockStates?.keys?.() ?? []])
             this._detachFloatingDock(dock, true);
 
@@ -275,21 +280,37 @@ export class MacThumbnailFisheye extends MacThumbnailFisheyeBase {
                 this._attachFloatingDock(dock);
         }
 
-        this._refreshFloatingDocks();
+        this._queueFloatingRefresh();
     }
 
     _attachFloatingDock(dock) {
-        const originalResetPosition = dock?._resetPosition;
-        if (typeof originalResetPosition !== 'function')
+        if (!dock?.connect)
             return;
 
-        const state = {originalResetPosition};
+        const state = {connections: []};
+        const queue = () => this._queueFloatingRefresh();
+
+        // Observe the actual fixed coordinates rather than replacing
+        // _resetPosition. Dash-to-Dock binds reset callbacks before this module
+        // exists, but every reset ultimately writes x/y and therefore reaches us.
+        for (const signal of ['notify::x', 'notify::y']) {
+            try {
+                state.connections.push(dock.connect(signal, queue));
+            } catch {
+                // Older/future Clutter may expose only one of these properties.
+            }
+        }
+
+        try {
+            state.connections.push(dock.connect('destroy', () => {
+                this._floatingDockStates?.delete(dock);
+                this._queueFloatingRefresh();
+            }));
+        } catch {
+            // Dock may already be tearing down during a monitor rebuild.
+        }
+
         this._floatingDockStates.set(dock, state);
-        dock._resetPosition = (...args) => {
-            const result = state.originalResetPosition.apply(dock, args);
-            this._applyFloatingOffset(dock);
-            return result;
-        };
     }
 
     _detachFloatingDock(dock, restoreGeometry) {
@@ -297,33 +318,40 @@ export class MacThumbnailFisheye extends MacThumbnailFisheyeBase {
         if (!state)
             return;
 
-        try {
-            dock._resetPosition = state.originalResetPosition;
-            if (restoreGeometry) {
-                state.originalResetPosition.call(dock);
-                dock._updateStaticBox?.();
+        for (const id of state.connections) {
+            try {
+                dock.disconnect(id);
+            } catch {
+                // Dock may already be destroyed.
             }
-        } catch {
-            // A dock removed during monitor rebuild may already be destroyed.
         }
 
         this._floatingDockStates.delete(dock);
+
+        if (restoreGeometry)
+            this._applyFloatingOffset(dock, 0);
+    }
+
+    _queueFloatingRefresh() {
+        if (!this._floatingDockStates || this._floatingRefreshId)
+            return;
+
+        this._floatingRefreshId = GLib.idle_add(
+            GLib.PRIORITY_DEFAULT_IDLE, () => {
+                this._floatingRefreshId = 0;
+                this._refreshFloatingDocks();
+                return GLib.SOURCE_REMOVE;
+            });
+        GLib.Source.set_name_by_id(this._floatingRefreshId,
+            '[dash-to-dock] macOS floating dock geometry');
     }
 
     _refreshFloatingDocks() {
         if (!this._floatingDockStates)
             return;
 
-        for (const dock of this._floatingDockStates.keys()) {
-            try {
-                // Always start from canonical Dash-to-Dock geometry before
-                // applying one inset, so work-area/settings changes cannot
-                // accumulate or drift the dock toward the center.
-                dock._resetPosition();
-            } catch {
-                // Dock may disappear during monitor rebuild.
-            }
-        }
+        for (const dock of this._floatingDockStates.keys())
+            this._applyFloatingOffset(dock);
 
         for (const renderer of this._interactions?._macEffects?._renderers?.values?.() ?? []) {
             renderer._materialRect = null;
@@ -331,35 +359,52 @@ export class MacThumbnailFisheye extends MacThumbnailFisheyeBase {
         }
     }
 
-    _applyFloatingOffset(dock) {
-        if (!this._settings?.get_boolean('macos-style'))
+    _applyFloatingOffset(dock, forcedGap = null) {
+        const monitor = dock?._monitor;
+        if (!monitor)
             return;
 
-        const gap = Math.max(0, Math.min(32,
-            this._settings.get_int('macos-floating-gap')));
-        if (!gap)
-            return;
+        const enabled = this._settings?.get_boolean('macos-style') ?? false;
+        const configuredGap = enabled
+            ? Math.max(0, Math.min(32,
+                this._settings.get_int('macos-floating-gap')))
+            : 0;
+        const gap = forcedGap ?? configuredGap;
+
+        let targetX = dock.x;
+        let targetY = dock.y;
 
         switch (dock.position) {
         case St.Side.TOP:
-            dock.y += gap;
+            targetY = monitor.y + gap;
             break;
         case St.Side.LEFT:
-            dock.x += gap;
+            targetX = monitor.x + gap;
             break;
         case St.Side.RIGHT:
-            dock.x -= gap;
+            targetX = monitor.x + monitor.width - gap;
             break;
         case St.Side.BOTTOM:
         default:
-            dock.y -= gap;
+            targetY = monitor.y + monitor.height - gap;
             break;
         }
 
-        // _staticBox is what Dash-to-Dock uses for intellihide and for the
-        // edge-to-dock safe corridor after a pressure/dwell reveal. Updating it
-        // here keeps the real edge barrier at the screen while the shown dock
-        // can float inward without creating a dead hover gap.
+        const xChanged = Math.abs(dock.x - targetX) > 0.01;
+        const yChanged = Math.abs(dock.y - targetY) > 0.01;
+        if (!xChanged && !yChanged)
+            return;
+
+        if (xChanged)
+            dock.x = targetX;
+        if (yChanged)
+            dock.y = targetY;
+
+        // Shell tracks chrome input regions separately from visual painting.
+        // Make the new fixed position authoritative for native proxy targets
+        // (Trash, Show Apps, app clicks/DND) before the next redraw.
+        dock.queue_relayout?.();
         dock._updateStaticBox?.();
+        Main.layoutManager._queueUpdateRegions?.();
     }
 }
