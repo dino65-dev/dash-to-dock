@@ -66,7 +66,7 @@ class MacExternalCompat {
         const enabled = this._settings.get_boolean('macos-style');
         const docks = this._dockManager._allDocks ?? [];
 
-        for (const dock of [...this._dockStates.keys()]) {
+        for (const [dock] of this._dockStates) {
             if (!enabled || !docks.includes(dock))
                 this._detachDock(dock);
         }
