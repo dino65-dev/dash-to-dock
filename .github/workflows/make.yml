@@ -12,6 +12,7 @@ name: Build & Package
       - feature/macos-thumbnail-fisheye-v115
       - feature/macos-thumbnail-activation-v116
       - feature/macos-thumbnail-hover-v117
+      - feature/macos-input-routing-v121
 
 permissions:
   contents: read
@@ -44,6 +45,7 @@ jobs:
           node --check macDockInteractions.js
           node --check macThumbnailFisheyeBase.js
           node --check macThumbnailFisheye.js
+          node --check macInputIntegrity.js
           node --check macPrefs.js
           node --check prefs.js
 
@@ -61,6 +63,7 @@ jobs:
           test -f _build/macDockInteractions.js
           test -f _build/macThumbnailFisheyeBase.js
           test -f _build/macThumbnailFisheye.js
+          test -f _build/macInputIntegrity.js
           test -f _build/macPrefs.js
           test -f _build/prefs.js
           test -f _build/stylesheet.css
@@ -71,21 +74,22 @@ jobs:
       - name: Write build summary
         run: |
           {
-            echo '## Dash to Dock — macOS Native v117'
+            echo '## Dash to Dock — macOS Native v121'
             echo ''
-            echo 'Download the **dash-to-dock-macos-native-v117-thumbnail-hover** artifact below.'
+            echo 'Download the **dash-to-dock-macos-native-v121-input-integrity** artifact below.'
             echo ''
-            echo '- minimized thumbnails extend the native Dock hover/autohide state'
-            echo '- stationary pointer over a thumbnail keeps the Dock visible indefinitely'
-            echo '- leaving a thumbnail resynchronizes real pointer hover and normal hide delay'
-            echo '- final HIDDEN state force-hides/resets detached thumbnails'
-            echo '- v116 activation, v115 fish-eye base, v114 interactions and v113 renderer unchanged'
+            echo '- final transformed icon geometry drives fallback click targets'
+            echo '- native Clutter event ownership preserves normal Dash-to-Dock behavior'
+            echo '- Trash/locations and Show Apps remain clickable after any thumbnail shift'
+            echo '- Show Apps is a safe trailing tray boundary when Trash/locations are disabled'
+            echo '- DND highlighting follows final compositor geometry including bounce/fish-eye'
+            echo '- v120 floating lifecycle, v117 hover and earlier renderer behavior preserved'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload ready-to-install extension
         uses: actions/upload-artifact@v4
         with:
-          name: dash-to-dock-macos-native-v117-thumbnail-hover
+          name: dash-to-dock-macos-native-v121-input-integrity
           path: _build/
           if-no-files-found: error
           retention-days: 30
