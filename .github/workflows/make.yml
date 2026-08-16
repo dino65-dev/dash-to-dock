@@ -16,6 +16,7 @@ name: Build & Package
       - feature/macos-input-stability-v122
       - feature/macos-direct-input-v123
       - feature/macos-proxy-input-v124
+      - feature/macos-static-tray-v126
 
 permissions:
   contents: read
@@ -65,6 +66,26 @@ jobs:
             exit 1
           fi
 
+      - name: Verify compact static tray architecture
+        run: |
+          grep -q 'const BOUNDARY_MIN_GAP = 6' macThumbnailFisheyeBase.js
+          grep -q 'actor.set_scale(previewState.scale, previewState.scale)' macThumbnailFisheyeBase.js
+          grep -q '_boundaryGuard(renderer, state, preview, boundary, maxScale)' macThumbnailFisheyeBase.js
+          grep -q 'state.shiftAmount += boundaryGuard' macThumbnailFisheyeBase.js
+          grep -q 'Keep state.trayBounds from the compact v124 layout' macThumbnailFisheyeBase.js
+          if grep -q 'cumulativeGrowth\|cumulativeSlotGrowth\|slotGrowth' macThumbnailFisheyeBase.js; then
+            echo 'thumbnail growth is affecting long-axis layout again'
+            exit 1
+          fi
+          if grep -q 'actor.set_position' macThumbnailFisheyeBase.js; then
+            echo 'thumbnail fish-eye is translating visual slots again'
+            exit 1
+          fi
+          if grep -q 'state.trayBounds =' macThumbnailFisheyeBase.js; then
+            echo 'thumbnail spring is rewriting compact material bounds again'
+            exit 1
+          fi
+
       - name: Lint JavaScript
         run: make check
 
@@ -91,24 +112,24 @@ jobs:
       - name: Write build summary
         run: |
           {
-            echo '## Dash to Dock — macOS Native v124'
+            echo '## Dash to Dock — macOS Native v126'
             echo ''
-            echo 'Download the **dash-to-dock-macos-native-v124-stable-proxy-input** artifact below.'
+            echo 'Download the **dash-to-dock-macos-native-v126-static-compact-tray** artifact below.'
             echo ''
-            echo '- thumbnail visuals are non-reactive and cannot move their own hover target'
-            echo '- one stable tray proxy owns thumbnail hover and activation'
-            echo '- tray base geometry no longer includes the preceding app spring offset'
-            echo '- reserved magnification space prevents the preceding app from overlapping the tray'
-            echo '- Trash/locations and Show Apps use dedicated final-visual reactive proxies'
-            echo '- location/Trash primary activation calls the location app directly'
-            echo '- old special-item stage capture is bypassed; normal app overflow capture remains'
-            echo '- v122 effective centers, DND geometry and floating lifecycle remain intact'
+            echo '- based directly on the working v124 compact tray, not v125 spacing'
+            echo '- thumbnail actors keep their compact base positions during magnification'
+            echo '- thumbnail spring changes compositor scale only; no cumulative translation'
+            echo '- no maximum-size slot is reserved between minimized thumbnails'
+            echo '- only the final thumbnail/system boundary receives a fixed overlap guard'
+            echo '- boundary guard subtracts the real compact base gap before adding space'
+            echo '- material bounds remain the compact v124 tray bounds and never breathe with scale'
+            echo '- v124 stable tray proxy and Trash/Show Apps input proxies remain unchanged'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload ready-to-install extension
         uses: actions/upload-artifact@v4
         with:
-          name: dash-to-dock-macos-native-v124-stable-proxy-input
+          name: dash-to-dock-macos-native-v126-static-compact-tray
           path: _build/
           if-no-files-found: error
           retention-days: 30
