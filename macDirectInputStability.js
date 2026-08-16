@@ -191,7 +191,7 @@ export class MacDirectInputStability {
             .filter(Boolean);
 
         for (const preview of previews) {
-            const actor = preview.actor;
+            const {actor} = preview;
             if (!actor?.visible)
                 continue;
 
@@ -223,16 +223,14 @@ export class MacDirectInputStability {
         }
 
         if (type !== Clutter.EventType.BUTTON_PRESS ||
-            renderer._isDockFullyHidden?.()) {
+            renderer._isDockFullyHidden?.())
             return state.originalCapturedEvent.call(renderer, event);
-        }
 
         const button = event.get_button?.() ?? 0;
         if (button !== Clutter.BUTTON_PRIMARY &&
             button !== Clutter.BUTTON_MIDDLE &&
-            button !== Clutter.BUTTON_SECONDARY) {
+            button !== Clutter.BUTTON_SECONDARY)
             return state.originalCapturedEvent.call(renderer, event);
-        }
 
         const [x, y] = event.get_coords();
         const item = this._findSpecialHit(renderer, x, y);
@@ -283,11 +281,12 @@ export class MacDirectInputStability {
     }
 
     _openSpecialMenu(item) {
-        const target = typeof item.source?.popupMenu === 'function'
-            ? item.source
-            : typeof item.item?.popupMenu === 'function'
-                ? item.item
-                : null;
+        let target = null;
+        if (typeof item.source?.popupMenu === 'function')
+            target = item.source;
+        else if (typeof item.item?.popupMenu === 'function')
+            target = item.item;
+
         if (!target)
             return false;
 
