@@ -240,9 +240,8 @@ export class MacThumbnailFisheye {
 
             if (Math.abs(previewState.scale - previewState.targetScale) >
                 SCALE_EPSILON ||
-                Math.abs(previewState.velocity) > VELOCITY_EPSILON) {
+                Math.abs(previewState.velocity) > VELOCITY_EPSILON)
                 moving = true;
-            }
 
             // Constant for a given setting/thumbnail size. This is the key
             // invariant: the slot center never depends on the current spring.
