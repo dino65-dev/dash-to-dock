@@ -4,19 +4,22 @@ import {Clutter, GLib, St} from './dependencies/gi.js';
 
 const FALLBACK_LONG_PRESS_MS = 600;
 const FALLBACK_DRAG_THRESHOLD = 10;
+const LAYOUT_SHIFT_EPSILON = 0.01;
 
 /**
  * Keeps the detached macOS presentation and Dash-to-Dock's native interaction
  * model in sync.
  *
- * Native actors remain authoritative whenever Clutter actually picked the
- * matching Dash item. When a visual transform moves an icon beyond the native
- * pick area, this controller bridges the click using the final transformed
- * visual rectangle instead of stale allocation geometry.
+ * v122 treats the tray displacement as part of an item's effective geometry
+ * everywhere input decisions are made. Native actors remain authoritative for
+ * normal app tiles. Trash/locations and Show Apps are routed from their final
+ * compositor rectangles because the thumbnail tray can move them outside the
+ * native parent allocation.
  */
 export class MacInputIntegrity {
-    constructor(interactions) {
+    constructor(interactions, thumbnailFisheye = null) {
         this._interactions = interactions;
+        this._thumbnailFisheye = thumbnailFisheye;
         this._macEffects = interactions?._macEffects ?? null;
         this._dockManager = interactions?._dockManager ?? null;
         this._settings = interactions?._settings ?? null;
@@ -62,6 +65,7 @@ export class MacInputIntegrity {
         this._settings = null;
         this._dockManager = null;
         this._macEffects = null;
+        this._thumbnailFisheye = null;
         this._interactions = null;
     }
 
@@ -86,10 +90,28 @@ export class MacInputIntegrity {
         if (typeof originalCapturedEvent !== 'function')
             return;
 
-        const state = {originalCapturedEvent};
+        const state = {
+            originalCapturedEvent,
+            originalPointerInActivationZone: renderer._pointerInActivationZone,
+            originalUpdateTargets: renderer._updateTargets,
+            hoveredSpecialActor: null,
+        };
         this._rendererStates.set(renderer, state);
+
         renderer._onCapturedEvent = event =>
             this._routeCapturedEvent(renderer, state, event);
+
+        if (typeof state.originalPointerInActivationZone === 'function') {
+            renderer._pointerInActivationZone = (x, y) =>
+                this._withEffectiveBaseCenters(renderer, () =>
+                    state.originalPointerInActivationZone.call(renderer, x, y));
+        }
+
+        if (typeof state.originalUpdateTargets === 'function') {
+            renderer._updateTargets = (x, y, active) =>
+                this._withEffectiveBaseCenters(renderer, () =>
+                    state.originalUpdateTargets.call(renderer, x, y, active));
+        }
     }
 
     _unpatchRenderer(renderer) {
@@ -100,8 +122,16 @@ export class MacInputIntegrity {
         if (this._pendingPress?.renderer === renderer)
             this._cancelPendingPress();
 
+        this._setSpecialHover(renderer, state, null);
+
         try {
             renderer._onCapturedEvent = state.originalCapturedEvent;
+            if (typeof state.originalPointerInActivationZone === 'function') {
+                renderer._pointerInActivationZone =
+                    state.originalPointerInActivationZone;
+            }
+            if (typeof state.originalUpdateTargets === 'function')
+                renderer._updateTargets = state.originalUpdateTargets;
         } catch {
             // Renderer may already be destroyed during a dock rebuild.
         }
@@ -119,25 +149,42 @@ export class MacInputIntegrity {
             return state.originalCapturedEvent.call(renderer, event);
         }
 
-        if (type === Clutter.EventType.MOTION)
+        if (type === Clutter.EventType.MOTION) {
+            const [x, y] = event.get_coords();
+            this._syncSpecialHover(renderer, state, x, y);
             return this._routeMotion(renderer, state, event);
+        }
+
         if (type === Clutter.EventType.BUTTON_RELEASE)
             return this._routeButtonRelease(renderer, event);
+
         if (type !== Clutter.EventType.BUTTON_PRESS)
             return state.originalCapturedEvent.call(renderer, event);
 
-        if (renderer._isDockFullyHidden?.())
+        if (renderer._isDockFullyHidden?.()) {
+            this._setSpecialHover(renderer, state, null);
             return Clutter.EVENT_PROPAGATE;
+        }
 
         const [x, y] = event.get_coords();
         const hit = this._visualHitTest(renderer, x, y);
         if (!hit)
             return Clutter.EVENT_PROPAGATE;
 
+        const special = this._isSpecialItem(hit);
+        if (special)
+            this._setSpecialHover(renderer, state, hit.actor ?? null);
+
         const source = event.get_source?.() ?? null;
-        if (this._nativeItemOwnsSource(hit, source)) {
+        if (!special && this._nativeItemOwnsSource(hit, source)) {
             // Native Dash-to-Dock receives the complete press/release/drag
-            // sequence, including modifiers, long-press and popup handling.
+            // sequence whenever Clutter really picked the matching app tile.
+            return Clutter.EVENT_PROPAGATE;
+        }
+
+        if (!special && hit.baseRect && pointInRect(hit.baseRect, x, y)) {
+            // Do not steal a normal app press from another native actor merely
+            // because detached artwork overlaps its unshifted tile.
             return Clutter.EVENT_PROPAGATE;
         }
 
@@ -174,10 +221,7 @@ export class MacInputIntegrity {
             return state.originalCapturedEvent.call(renderer, event);
 
         const [x, y] = event.get_coords();
-        const threshold = this._dragThreshold();
-        const dx = x - pending.startX;
-        const dy = y - pending.startY;
-        if (dx * dx + dy * dy > threshold * threshold) {
+        if (this._pointerMovedPastThreshold(pending, x, y)) {
             pending.moved = true;
             this._cancelLongPressTimer(pending);
         }
@@ -195,9 +239,14 @@ export class MacInputIntegrity {
 
         this._cancelLongPressTimer(pending);
         const [x, y] = event.get_coords();
-        const releasedHit = this._visualHitTest(renderer, x, y);
+        if (this._pointerMovedPastThreshold(pending, x, y))
+            pending.moved = true;
+
+        // Do not re-hit-test against a spring-driven rectangle here. The item can
+        // legitimately move several pixels between press and release while the
+        // physical pointer never moved. Pointer slop is the stable click contract.
         const shouldActivate = !pending.moved && !pending.longPressed &&
-            !pending.menuOpened && releasedHit === pending.item;
+            !pending.menuOpened;
         const {item, button: pressedButton} = pending;
         this._pendingPress = null;
 
@@ -205,6 +254,13 @@ export class MacInputIntegrity {
             this._activateVisualItem(item, pressedButton);
 
         return Clutter.EVENT_STOP;
+    }
+
+    _pointerMovedPastThreshold(pending, x, y) {
+        const threshold = this._dragThreshold();
+        const dx = x - pending.startX;
+        const dy = y - pending.startY;
+        return dx * dx + dy * dy > threshold * threshold;
     }
 
     _startLongPressFallback() {
@@ -273,11 +329,40 @@ export class MacInputIntegrity {
         }
     }
 
-    _visualHitTest(renderer, x, y) {
+    _syncSpecialHover(renderer, state, x, y) {
+        if (renderer._isDockFullyHidden?.()) {
+            this._setSpecialHover(renderer, state, null);
+            return;
+        }
+
+        const item = this._visualHitTest(renderer, x, y, true);
+        this._setSpecialHover(renderer, state, item?.actor ?? null);
+    }
+
+    _setSpecialHover(renderer, state, actor) {
+        if (!state || state.hoveredSpecialActor === actor)
+            return;
+
+        const previous = state.hoveredSpecialActor;
+        state.hoveredSpecialActor = actor;
+
+        // Use the same visibility owner as minimized thumbnails. Add the new
+        // actor before removing the previous one so crossing Trash -> Show Apps
+        // cannot momentarily drop the hover pin and start an autohide transition.
+        if (actor)
+            this._thumbnailFisheye?._setThumbnailHover?.(renderer, actor, true);
+        if (previous)
+            this._thumbnailFisheye?._setThumbnailHover?.(renderer, previous, false);
+    }
+
+    _visualHitTest(renderer, x, y, specialOnly = false) {
         let best = null;
         let bestDistance = Number.POSITIVE_INFINITY;
 
         for (const item of renderer?._items ?? []) {
+            if (specialOnly && !this._isSpecialItem(item))
+                continue;
+
             const rect = this._finalVisualRect(item);
             if (!rect || !pointInRect(rect, x, y))
                 continue;
@@ -310,6 +395,12 @@ export class MacInputIntegrity {
         return item.visualRect ?? null;
     }
 
+    _isSpecialItem(item) {
+        return item?.kind === 'show-apps' ||
+            (item?.kind === 'app' &&
+             (item.app?.location || item.app?.isTrash));
+    }
+
     _nativeItemOwnsSource(item, source) {
         if (!source)
             return false;
@@ -325,6 +416,52 @@ export class MacInputIntegrity {
             }
         }
         return false;
+    }
+
+    _withEffectiveBaseCenters(renderer, callback) {
+        const interactionState =
+            this._interactions?._rendererStates?.get?.(renderer);
+        if (!interactionState?.trayActive)
+            return callback();
+
+        const horizontal = renderer?._dock?.isHorizontal;
+        const saved = [];
+
+        for (const item of renderer?._items ?? []) {
+            const shift = this._trayLayoutShift(renderer, item);
+            if (!Number.isFinite(shift) ||
+                Math.abs(shift) <= LAYOUT_SHIFT_EPSILON)
+                continue;
+
+            saved.push([item, item.baseCenterX, item.baseCenterY]);
+            if (horizontal)
+                item.baseCenterX += shift;
+            else
+                item.baseCenterY += shift;
+        }
+
+        try {
+            return callback();
+        } finally {
+            for (const [item, x, y] of saved) {
+                item.baseCenterX = x;
+                item.baseCenterY = y;
+            }
+        }
+    }
+
+    _trayLayoutShift(renderer, item) {
+        const actor = item?.item;
+        if (!actor)
+            return 0;
+
+        const horizontal = renderer?._dock?.isHorizontal;
+        const translation = horizontal
+            ? actor.translationX
+            : actor.translationY;
+        const fishEyeOffset = item.offset ?? 0;
+        const shift = (translation ?? 0) - fishEyeOffset;
+        return Number.isFinite(shift) ? shift : 0;
     }
 
     _wrapPostPaintItems() {
