@@ -253,6 +253,20 @@ export class MacDirectInputStability {
             this._settings?.get_double('macos-magnification') ?? 0);
         const reserve = Math.max(0,
             previous.baseSize * (maxScale - 1) / 2);
+
+        // The stable visual gap is real layout space, so trailing native/system
+        // items must receive it too. If Trash/locations exist they were already
+        // shifted by MacDockInteractions; if they do not, v122 will later use
+        // the increased shiftAmount when it makes Show Apps the boundary.
+        if (reserve > 0) {
+            if (interactionState.specialIndex >= 0) {
+                const items = renderer._orderedItems?.() ?? renderer._items ?? [];
+                for (let i = interactionState.specialIndex; i < items.length; i++)
+                    this._interactions._shiftPaintedItem(renderer, items[i], reserve);
+            }
+            interactionState.shiftAmount += reserve;
+        }
+
         const previousEnd = horizontal
             ? previous.baseRect.x + previous.baseRect.width
             : previous.baseRect.y + previous.baseRect.height;
