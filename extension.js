@@ -317,7 +317,7 @@ export default class DashToDockExtension extends Extension.Extension {
         this._macThumbnailFisheye = new MacThumbnailFisheye(
             this._macDockInteractions);
         this._macDockInputRouter = new MacDockInputRouter(
-            this._macDockEffects, this._macDockInteractions, dockManager);
+            this._macDockEffects, this._macThumbnailFisheye, dockManager);
     }
 
     disable() {
