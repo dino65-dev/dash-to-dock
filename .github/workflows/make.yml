@@ -13,6 +13,7 @@ name: Build & Package
       - feature/macos-thumbnail-activation-v116
       - feature/macos-thumbnail-hover-v117
       - feature/macos-input-routing-v121
+      - feature/macos-input-stability-v122
 
 permissions:
   contents: read
@@ -74,22 +75,22 @@ jobs:
       - name: Write build summary
         run: |
           {
-            echo '## Dash to Dock — macOS Native v121'
+            echo '## Dash to Dock — macOS Native v122'
             echo ''
-            echo 'Download the **dash-to-dock-macos-native-v121-input-integrity** artifact below.'
+            echo 'Download the **dash-to-dock-macos-native-v122-input-stability** artifact below.'
             echo ''
-            echo '- final transformed icon geometry drives fallback click targets'
-            echo '- native Clutter event ownership preserves normal Dash-to-Dock behavior'
-            echo '- Trash/locations and Show Apps remain clickable after any thumbnail shift'
-            echo '- Show Apps is a safe trailing tray boundary when Trash/locations are disabled'
-            echo '- DND highlighting follows final compositor geometry including bounce/fish-eye'
-            echo '- v120 floating lifecycle, v117 hover and earlier renderer behavior preserved'
+            echo '- Trash/locations and Show Apps use their final tray-shifted geometry'
+            echo '- click release uses physical pointer slop, not a moving spring re-hit-test'
+            echo '- shifted system icons share the thumbnail hover/autohide visibility owner'
+            echo '- fish-eye activation follows tray displacement for one or many minimized windows'
+            echo '- normal app native click/drag/reorder handling remains authoritative'
+            echo '- DND highlighting still follows final compositor geometry and bounce transforms'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload ready-to-install extension
         uses: actions/upload-artifact@v4
         with:
-          name: dash-to-dock-macos-native-v121-input-integrity
+          name: dash-to-dock-macos-native-v122-input-stability
           path: _build/
           if-no-files-found: error
           retention-days: 30
