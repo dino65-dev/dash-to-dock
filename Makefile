@@ -27,6 +27,7 @@ EXTRA_MODULES = \
                 macThumbnailFisheyeBase.js \
                 macThumbnailFisheye.js \
                 macInputIntegrity.js \
+                macDirectInputStability.js \
                 macPrefs.js \
                 prefs.js \
                 theming.js \
