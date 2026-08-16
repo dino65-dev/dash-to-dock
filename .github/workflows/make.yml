@@ -16,6 +16,7 @@ name: Build & Package
       - feature/macos-input-stability-v122
       - feature/macos-direct-input-v123
       - feature/macos-proxy-input-v124
+      - feature/macos-fixed-tray-v125
 
 permissions:
   contents: read
@@ -65,6 +66,21 @@ jobs:
             exit 1
           fi
 
+      - name: Verify fixed-slot tray architecture
+        run: |
+          grep -q 'cumulativeSlotGrowth' macThumbnailFisheyeBase.js
+          grep -q 'slotGrowth = Math.max(0, extent \* (maxScale - 1))' macThumbnailFisheyeBase.js
+          grep -q 'boundaryGuard' macThumbnailFisheyeBase.js
+          grep -q 'Material uses the maximum reserved slots' macThumbnailFisheyeBase.js
+          if grep -q 'extent \* (previewState.scale - 1)' macThumbnailFisheyeBase.js; then
+            echo 'live thumbnail growth is changing tray layout again'
+            exit 1
+          fi
+          if grep -q 'state.shiftAmount += cumulativeGrowth' macThumbnailFisheyeBase.js; then
+            echo 'live spring displacement reached the trailing system section'
+            exit 1
+          fi
+
       - name: Lint JavaScript
         run: make check
 
@@ -91,24 +107,23 @@ jobs:
       - name: Write build summary
         run: |
           {
-            echo '## Dash to Dock — macOS Native v124'
+            echo '## Dash to Dock — macOS Native v125'
             echo ''
-            echo 'Download the **dash-to-dock-macos-native-v124-stable-proxy-input** artifact below.'
+            echo 'Download the **dash-to-dock-macos-native-v125-fixed-tray-slots** artifact below.'
             echo ''
-            echo '- thumbnail visuals are non-reactive and cannot move their own hover target'
-            echo '- one stable tray proxy owns thumbnail hover and activation'
-            echo '- tray base geometry no longer includes the preceding app spring offset'
-            echo '- reserved magnification space prevents the preceding app from overlapping the tray'
-            echo '- Trash/locations and Show Apps use dedicated final-visual reactive proxies'
-            echo '- location/Trash primary activation calls the location app directly'
-            echo '- old special-item stage capture is bypassed; normal app overflow capture remains'
-            echo '- v122 effective centers, DND geometry and floating lifecycle remain intact'
+            echo '- each minimized thumbnail gets one fixed maximum-scale slot'
+            echo '- pointer motion changes preview scale only, never the slot center'
+            echo '- live spring growth no longer shifts later thumbnails or Trash'
+            echo '- the first trailing system item gets its own maximum-scale safety guard'
+            echo '- material bounds use fixed maximum tray slots instead of live growth'
+            echo '- v124 stable tray and system-item input proxies remain authoritative'
+            echo '- normal app click/drag/reorder, DND, autohide and floating geometry remain intact'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload ready-to-install extension
         uses: actions/upload-artifact@v4
         with:
-          name: dash-to-dock-macos-native-v124-stable-proxy-input
+          name: dash-to-dock-macos-native-v125-fixed-tray-slots
           path: _build/
           if-no-files-found: error
           retention-days: 30
