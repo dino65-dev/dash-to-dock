@@ -1,24 +1,23 @@
 // -*- mode: js; js-indent-level: 4; indent-tabs-mode: nil -*-
 
-import {Clutter, GLib} from './dependencies/gi.js';
+import {Clutter} from './dependencies/gi.js';
 
 /**
  * Routes pointer input against the final macOS compositor geometry.
  *
  * Native Dash-to-Dock actors remain the DND/backend proxies, but tray and
  * fish-eye transforms can legitimately paint special items outside their
- * parent's original allocation. Clutter cannot pick a translated child once
- * an ancestor/input region excludes that point, even when the child is visible.
+ * parent's original allocation. A translated child can therefore remain
+ * visible while no longer being a reliable native pick target.
  *
- * This service therefore makes the final transformed visual rectangle
- * authoritative for special-item pointer activation while preserving native
- * handling inside normal application allocations so app reordering/dragging is
- * not changed.
+ * The final transformed visual rectangle is authoritative for special-item
+ * pointer activation. Normal application icons keep native handling inside
+ * their ordinary allocation so app drag/reorder behavior remains unchanged.
  */
 export class MacDockInputRouter {
-    constructor(macEffects, interactions, dockManager) {
+    constructor(macEffects, thumbnailFisheye, dockManager) {
         this._macEffects = macEffects;
-        this._interactions = interactions;
+        this._thumbnailFisheye = thumbnailFisheye;
         this._dockManager = dockManager;
         this._settings = macEffects?._settings ?? null;
         this._states = new Map();
@@ -43,7 +42,7 @@ export class MacDockInputRouter {
         this._states.clear();
         this._settings = null;
         this._dockManager = null;
-        this._interactions = null;
+        this._thumbnailFisheye = null;
         this._macEffects = null;
     }
 
@@ -73,10 +72,7 @@ export class MacDockInputRouter {
 
         const state = {
             originalCapturedEvent: renderer._onCapturedEvent,
-            hoverPinned: false,
-            previousRequiresVisibility: false,
-            previousVisibilityWasTimed: false,
-            releaseId: 0,
+            hoveredSpecialActor: null,
         };
 
         renderer._onCapturedEvent = event => {
@@ -94,10 +90,7 @@ export class MacDockInputRouter {
         if (!state)
             return;
 
-        if (state.releaseId)
-            GLib.source_remove(state.releaseId);
-        state.releaseId = 0;
-        this._releaseVisualHover(renderer, state, true);
+        this._setSpecialHover(renderer, state, null);
 
         try {
             renderer._onCapturedEvent = state.originalCapturedEvent;
@@ -121,7 +114,9 @@ export class MacDockInputRouter {
 
         if (type === Clutter.EventType.MOTION) {
             const [x, y] = event.get_coords();
-            this._updateVisualHover(renderer, x, y);
+            const special = this._hitFinalVisual(renderer, x, y, true);
+            this._setSpecialHover(renderer, this._states.get(renderer),
+                special?.item?.actor ?? null);
             return null;
         }
 
@@ -158,6 +153,10 @@ export class MacDockInputRouter {
                 return null;
 
             try {
+                // DockManager already owns notify::checked and performs the
+                // actual overview/app-grid transition. Toggle that semantic
+                // property instead of synthesizing a pointer event at a stale
+                // native hit target.
                 hit.item.source.checked = !hit.item.source.checked;
                 return Clutter.EVENT_STOP;
             } catch (error) {
@@ -170,6 +169,9 @@ export class MacDockInputRouter {
             (button === Clutter.BUTTON_PRIMARY ||
              button === Clutter.BUTTON_MIDDLE)) {
             try {
+                // This is the same DockAppIcon activation API used by the
+                // native Dash, so Trash/location apps and ordinary app overflow
+                // preserve Dash-to-Dock click-action semantics.
                 hit.item.source.activate(button);
                 return Clutter.EVENT_STOP;
             } catch (error) {
@@ -211,12 +213,13 @@ export class MacDockInputRouter {
             return null;
 
         try {
+            // This includes fish-eye scale, tray displacement and any later
+            // bounce translation. Cached visualRect cannot represent all three.
             const [x, y] = actor.get_transformed_position();
             const [width, height] = actor.get_transformed_size();
             if ([x, y, width, height].every(Number.isFinite) &&
-                width > 0 && height > 0) {
+                width > 0 && height > 0)
                 return {x, y, width, height};
-            }
         } catch {
             // Fall back to the renderer's cached geometry below.
         }
@@ -230,104 +233,21 @@ export class MacDockInputRouter {
              (item.app?.location || item.app?.isTrash));
     }
 
-    _updateVisualHover(renderer, x, y) {
-        const state = this._states.get(renderer);
-        if (!state)
+    _setSpecialHover(renderer, state, actor) {
+        if (!state || state.hoveredSpecialActor === actor)
             return;
 
-        const specialHit = this._hitFinalVisual(renderer, x, y, true);
-        if (specialHit) {
-            this._pinVisualHover(renderer, state);
-            return;
-        }
+        const previous = state.hoveredSpecialActor;
+        state.hoveredSpecialActor = actor;
 
-        if (!state.hoverPinned)
-            return;
-
-        // Defer release until target hover notifications from the same motion
-        // event have run. This avoids fighting the minimized-thumbnail hover pin
-        // when crossing directly between a thumbnail and Trash/Show Apps.
-        if (state.releaseId)
-            return;
-
-        state.releaseId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
-            state.releaseId = 0;
-            const [pointerX, pointerY] = global.get_pointer();
-            if (this._hitFinalVisual(renderer, pointerX, pointerY, true) ||
-                this._thumbnailHovered(renderer))
-                return GLib.SOURCE_REMOVE;
-
-            this._releaseVisualHover(renderer, state, false);
-            return GLib.SOURCE_REMOVE;
-        });
-        GLib.Source.set_name_by_id(state.releaseId,
-            '[dash-to-dock] macOS special visual hover release');
-    }
-
-    _pinVisualHover(renderer, state) {
-        if (state.releaseId) {
-            GLib.source_remove(state.releaseId);
-            state.releaseId = 0;
-        }
-
-        const dock = renderer?._dock;
-        const dash = dock?.dash;
-        const box = dock?._box;
-        if (!dock || !dash || !box)
-            return;
-
-        if (!state.hoverPinned) {
-            state.previousRequiresVisibility = !!dash.requiresVisibility;
-            state.previousVisibilityWasTimed = !!dash._requiresVisibilityTimeout;
-            state.hoverPinned = true;
-        }
-
-        // Reassert on every motion so crossing from a separately pinned
-        // thumbnail cannot clear this visual-region hold due signal ordering.
-        box.set_hover?.(true);
-        if (!dash.requiresVisibility)
-            dash.requiresVisibility = true;
-        dock._show?.();
-        renderer._wake?.();
-    }
-
-    _releaseVisualHover(renderer, state, force) {
-        if (!state?.hoverPinned)
-            return;
-
-        const dock = renderer?._dock;
-        const dash = dock?.dash;
-        const box = dock?._box;
-        state.hoverPinned = false;
-
-        if (!dock || !dash || !box)
-            return;
-
-        box.sync_hover?.();
-
-        if (!force && this._thumbnailHovered(renderer))
-            return;
-
-        const timedVisibilityStillActive = !!dash._requiresVisibilityTimeout;
-        const preserveUntimedVisibility =
-            state.previousRequiresVisibility && !state.previousVisibilityWasTimed;
-        const shouldRemainRequired =
-            timedVisibilityStillActive || preserveUntimedVisibility;
-
-        if (dash.requiresVisibility !== shouldRemainRequired)
-            dash.requiresVisibility = shouldRemainRequired;
-
-        dock._updateDashVisibility?.();
-        renderer._wake?.();
-    }
-
-    _thumbnailHovered(renderer) {
-        const interactionState = this._interactions?._rendererStates?.get(renderer);
-        for (const preview of interactionState?.thumbnails?.values?.() ?? []) {
-            if (preview.actor?.hover)
-                return true;
-        }
-        return false;
+        // Reuse the v117 thumbnail hover-pin manager. This gives thumbnails,
+        // Trash, locations and Show Apps one shared actor set and one owner of
+        // requiresVisibility, so crossing between them cannot leave the Dock
+        // hidden or permanently pinned open.
+        if (previous)
+            this._thumbnailFisheye?._setThumbnailHover?.(renderer, previous, false);
+        if (actor)
+            this._thumbnailFisheye?._setThumbnailHover?.(renderer, actor, true);
     }
 }
 
