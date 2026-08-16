@@ -14,6 +14,7 @@ name: Build & Package
       - feature/macos-thumbnail-hover-v117
       - feature/macos-input-routing-v121
       - feature/macos-input-stability-v122
+      - feature/macos-direct-input-v123
 
 permissions:
   contents: read
@@ -47,6 +48,7 @@ jobs:
           node --check macThumbnailFisheyeBase.js
           node --check macThumbnailFisheye.js
           node --check macInputIntegrity.js
+          node --check macDirectInputStability.js
           node --check macPrefs.js
           node --check prefs.js
 
@@ -65,6 +67,7 @@ jobs:
           test -f _build/macThumbnailFisheyeBase.js
           test -f _build/macThumbnailFisheye.js
           test -f _build/macInputIntegrity.js
+          test -f _build/macDirectInputStability.js
           test -f _build/macPrefs.js
           test -f _build/prefs.js
           test -f _build/stylesheet.css
@@ -75,22 +78,22 @@ jobs:
       - name: Write build summary
         run: |
           {
-            echo '## Dash to Dock — macOS Native v122'
+            echo '## Dash to Dock — macOS Native v123'
             echo ''
-            echo 'Download the **dash-to-dock-macos-native-v122-input-stability** artifact below.'
+            echo 'Download the **dash-to-dock-macos-native-v123-direct-input-stability** artifact below.'
             echo ''
-            echo '- Trash/locations and Show Apps use their final tray-shifted geometry'
-            echo '- click release uses physical pointer slop, not a moving spring re-hit-test'
-            echo '- shifted system icons share the thumbnail hover/autohide visibility owner'
-            echo '- fish-eye activation follows tray displacement for one or many minimized windows'
-            echo '- normal app native click/drag/reorder handling remains authoritative'
-            echo '- DND highlighting still follows final compositor geometry and bounce transforms'
+            echo '- direct thumbnail entry uses a stable pre-transform activation zone'
+            echo '- preview magnification can no longer toggle itself by moving under the pointer'
+            echo '- Trash/locations activate on the captured final-visual press'
+            echo '- Show Apps toggles on the captured final-visual press from desktop or overview'
+            echo '- normal app click, menu, long-press and drag/reorder paths stay native'
+            echo '- v122 tray geometry, DND, hover ownership and floating lifecycle remain intact'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload ready-to-install extension
         uses: actions/upload-artifact@v4
         with:
-          name: dash-to-dock-macos-native-v122-input-stability
+          name: dash-to-dock-macos-native-v123-direct-input-stability
           path: _build/
           if-no-files-found: error
           retention-days: 30
