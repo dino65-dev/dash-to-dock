@@ -7,6 +7,7 @@ import {MacDockEffects} from './macDockEffects.js';
 import {MacDockInteractions} from './macDockInteractions.js';
 import {MacThumbnailFisheye} from './macThumbnailFisheye.js';
 import {MacInputIntegrity} from './macInputIntegrity.js';
+import {MacDirectInputStability} from './macDirectInputStability.js';
 import {Extension} from './dependencies/shell/extensions/extension.js';
 
 const MACOS_SCHEMA = 'org.gnome.shell.extensions.dash-to-dock.macos';
@@ -318,12 +319,18 @@ export default class DashToDockExtension extends Extension.Extension {
             this._macDockInteractions);
         this._macInputIntegrity = new MacInputIntegrity(
             this._macDockInteractions, this._macThumbnailFisheye);
+        this._macDirectInputStability = new MacDirectInputStability(
+            this._macDockInteractions,
+            this._macThumbnailFisheye,
+            this._macInputIntegrity);
     }
 
     disable() {
         global.disconnect(this._shutdownID);
         delete this._shutdownID;
 
+        this._macDirectInputStability?.destroy();
+        this._macDirectInputStability = null;
         this._macInputIntegrity?.destroy();
         this._macInputIntegrity = null;
         this._macThumbnailFisheye?.destroy();
