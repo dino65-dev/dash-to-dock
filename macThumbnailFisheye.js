@@ -1,24 +1,30 @@
 // -*- mode: js; js-indent-level: 4; indent-tabs-mode: nil -*-
 
-import {Clutter, St} from './dependencies/gi.js';
+import {Clutter, GLib, St} from './dependencies/gi.js';
 import {Main} from './dependencies/shell/ui.js';
 import {MacThumbnailFisheye as MacThumbnailFisheyeBase}
     from './macThumbnailFisheyeBase.js';
 
 /**
- * v117 keeps the green v115 fish-eye implementation and v116 activation fix,
- * while making detached minimized-window thumbnails participate in the Dock's
- * real hover/autohide lifecycle.
+ * v120 keeps the green v115 fish-eye implementation plus the v116/v117
+ * activation and hover fixes. Floating geometry is maintained as a lifecycle
+ * invariant instead of monkeypatching Dash-to-Dock's _resetPosition method.
  *
- * The thumbnails live in the full-screen macOS compositor layer rather than
- * inside dock._box, so Dash-to-Dock cannot see them through dock._box.hover.
- * While any thumbnail is hovered we temporarily extend the native hover state
- * and requiresVisibility flag. On leave we resync the native hover from the
- * actual pointer and hand visibility back to Dash-to-Dock.
+ * Dash-to-Dock binds some _resetPosition callbacks during construction, so a
+ * later method replacement cannot intercept every startup/work-area reset.
+ * Instead we observe the dock's real x/y lifecycle, recompute an absolute
+ * edge-relative target, and explicitly invalidate Shell's chrome input region.
+ * This keeps visual items and the native Trash/Show Apps hit targets aligned.
  */
 export class MacThumbnailFisheye extends MacThumbnailFisheyeBase {
+    constructor(interactions) {
+        super(interactions);
+        this._installFloatingGeometry();
+    }
+
     destroy() {
         this._releaseAllDockHoverPins();
+        this._removeFloatingGeometry();
         super.destroy();
         this._dockHoverPins?.clear?.();
     }
@@ -214,5 +220,191 @@ export class MacThumbnailFisheye extends MacThumbnailFisheyeBase {
 
         for (const renderer of [...this._dockHoverPins.keys()])
             this._releaseDockHoverPin(renderer);
+    }
+
+    _installFloatingGeometry() {
+        const manager = this._interactions?._dockManager;
+        const settings = this._settings;
+        if (!manager || !settings)
+            return;
+
+        this._floatingDockStates = new Map();
+        this._floatingRefreshId = 0;
+        this._floatingDocksReadyId = manager.connect(
+            'docks-ready', () => this._syncFloatingDocks());
+        this._floatingStyleId = settings.connect(
+            'changed::macos-style', () => this._queueFloatingRefresh());
+        this._floatingGapId = settings.connect(
+            'changed::macos-floating-gap', () => this._queueFloatingRefresh());
+
+        this._syncFloatingDocks();
+    }
+
+    _removeFloatingGeometry() {
+        const manager = this._interactions?._dockManager;
+        const settings = this._settings;
+
+        if (this._floatingDocksReadyId)
+            manager?.disconnect?.(this._floatingDocksReadyId);
+        if (this._floatingStyleId)
+            settings?.disconnect?.(this._floatingStyleId);
+        if (this._floatingGapId)
+            settings?.disconnect?.(this._floatingGapId);
+        if (this._floatingRefreshId)
+            GLib.source_remove(this._floatingRefreshId);
+
+        this._floatingRefreshId = 0;
+        for (const dock of [...this._floatingDockStates?.keys?.() ?? []])
+            this._detachFloatingDock(dock, true);
+
+        this._floatingDockStates?.clear?.();
+        this._floatingDockStates = null;
+        this._floatingDocksReadyId = 0;
+        this._floatingStyleId = 0;
+        this._floatingGapId = 0;
+    }
+
+    _syncFloatingDocks() {
+        const manager = this._interactions?._dockManager;
+        if (!manager || !this._floatingDockStates)
+            return;
+
+        const docks = manager._allDocks ?? [];
+        for (const dock of [...this._floatingDockStates.keys()]) {
+            if (!docks.includes(dock))
+                this._detachFloatingDock(dock, false);
+        }
+
+        for (const dock of docks) {
+            if (!this._floatingDockStates.has(dock))
+                this._attachFloatingDock(dock);
+        }
+
+        this._queueFloatingRefresh();
+    }
+
+    _attachFloatingDock(dock) {
+        if (!dock?.connect)
+            return;
+
+        const state = {connections: []};
+        const queue = () => this._queueFloatingRefresh();
+
+        // Observe the actual fixed coordinates rather than replacing
+        // _resetPosition. Dash-to-Dock binds reset callbacks before this module
+        // exists, but every reset ultimately writes x/y and therefore reaches us.
+        for (const signal of ['notify::x', 'notify::y']) {
+            try {
+                state.connections.push(dock.connect(signal, queue));
+            } catch {
+                // Older/future Clutter may expose only one of these properties.
+            }
+        }
+
+        try {
+            state.connections.push(dock.connect('destroy', () => {
+                this._floatingDockStates?.delete(dock);
+                this._queueFloatingRefresh();
+            }));
+        } catch {
+            // Dock may already be tearing down during a monitor rebuild.
+        }
+
+        this._floatingDockStates.set(dock, state);
+    }
+
+    _detachFloatingDock(dock, restoreGeometry) {
+        const state = this._floatingDockStates?.get(dock);
+        if (!state)
+            return;
+
+        for (const id of state.connections) {
+            try {
+                dock.disconnect(id);
+            } catch {
+                // Dock may already be destroyed.
+            }
+        }
+
+        this._floatingDockStates.delete(dock);
+
+        if (restoreGeometry)
+            this._applyFloatingOffset(dock, 0);
+    }
+
+    _queueFloatingRefresh() {
+        if (!this._floatingDockStates || this._floatingRefreshId)
+            return;
+
+        this._floatingRefreshId = GLib.idle_add(
+            GLib.PRIORITY_DEFAULT_IDLE, () => {
+                this._floatingRefreshId = 0;
+                this._refreshFloatingDocks();
+                return GLib.SOURCE_REMOVE;
+            });
+        GLib.Source.set_name_by_id(this._floatingRefreshId,
+            '[dash-to-dock] macOS floating dock geometry');
+    }
+
+    _refreshFloatingDocks() {
+        if (!this._floatingDockStates)
+            return;
+
+        for (const dock of this._floatingDockStates.keys())
+            this._applyFloatingOffset(dock);
+
+        for (const renderer of this._interactions?._macEffects?._renderers?.values?.() ?? []) {
+            renderer._materialRect = null;
+            renderer._wake?.();
+        }
+    }
+
+    _applyFloatingOffset(dock, forcedGap = null) {
+        const monitor = dock?._monitor;
+        if (!monitor)
+            return;
+
+        const enabled = this._settings?.get_boolean('macos-style') ?? false;
+        const configuredGap = enabled
+            ? Math.max(0, Math.min(32,
+                this._settings.get_int('macos-floating-gap')))
+            : 0;
+        const gap = forcedGap ?? configuredGap;
+
+        let targetX = dock.x;
+        let targetY = dock.y;
+
+        switch (dock.position) {
+        case St.Side.TOP:
+            targetY = monitor.y + gap;
+            break;
+        case St.Side.LEFT:
+            targetX = monitor.x + gap;
+            break;
+        case St.Side.RIGHT:
+            targetX = monitor.x + monitor.width - gap;
+            break;
+        case St.Side.BOTTOM:
+        default:
+            targetY = monitor.y + monitor.height - gap;
+            break;
+        }
+
+        const xChanged = Math.abs(dock.x - targetX) > 0.01;
+        const yChanged = Math.abs(dock.y - targetY) > 0.01;
+        if (!xChanged && !yChanged)
+            return;
+
+        if (xChanged)
+            dock.x = targetX;
+        if (yChanged)
+            dock.y = targetY;
+
+        // Shell tracks chrome input regions separately from visual painting.
+        // Make the new fixed position authoritative for native proxy targets
+        // (Trash, Show Apps, app clicks/DND) before the next redraw.
+        dock.queue_relayout?.();
+        dock._updateStaticBox?.();
+        Main.layoutManager._queueUpdateRegions?.();
     }
 }

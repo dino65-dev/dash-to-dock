@@ -61,6 +61,12 @@
       <summary>Dock corner radius</summary>
       <description>Corner radius of the floating dock material.</description>
     </key>
+    <key type="i" name="macos-floating-gap">
+      <default>10</default>
+      <range min="0" max="32"/>
+      <summary>Floating edge gap</summary>
+      <description>Logical-pixel inset between the native Dash-to-Dock allocation and the monitor edge while macOS style is enabled. Because the native dock itself is shifted, all compositor visuals and minimized-window trays inherit the same floating geometry.</description>
+    </key>
 
     <key type="b" name="macos-adaptive-dark">
       <default>true</default>
