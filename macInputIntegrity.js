@@ -160,11 +160,10 @@ export class MacInputIntegrity {
             timeoutId: 0,
         };
 
-        if (button === Clutter.BUTTON_SECONDARY) {
+        if (button === Clutter.BUTTON_SECONDARY)
             this._pendingPress.menuOpened = this._openMenu(hit);
-        } else if (button === Clutter.BUTTON_PRIMARY) {
+        else if (button === Clutter.BUTTON_PRIMARY)
             this._startLongPressFallback();
-        }
 
         return Clutter.EVENT_STOP;
     }
@@ -199,8 +198,7 @@ export class MacInputIntegrity {
         const releasedHit = this._visualHitTest(renderer, x, y);
         const shouldActivate = !pending.moved && !pending.longPressed &&
             !pending.menuOpened && releasedHit === pending.item;
-        const item = pending.item;
-        const pressedButton = pending.button;
+        const {item, button: pressedButton} = pending;
         this._pendingPress = null;
 
         if (shouldActivate)
