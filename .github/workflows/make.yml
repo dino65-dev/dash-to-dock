@@ -15,6 +15,7 @@ name: Build & Package
       - feature/macos-input-routing-v121
       - feature/macos-input-stability-v122
       - feature/macos-direct-input-v123
+      - feature/macos-proxy-input-v124
 
 permissions:
   contents: read
@@ -52,6 +53,18 @@ jobs:
           node --check macPrefs.js
           node --check prefs.js
 
+      - name: Verify stable input architecture
+        run: |
+          grep -q 'previous.baseRect.x + previous.baseRect.width' macDirectInputStability.js
+          grep -q 'actor.reactive = false' macDirectInputStability.js
+          grep -q 'state.trayInputRect' macDirectInputStability.js
+          grep -q '_createSpecialProxy' macDirectInputStability.js
+          grep -q 'item.app.activate' macDirectInputStability.js
+          if grep -q 'previous.baseRect.x + previous.offset' macDirectInputStability.js; then
+            echo 'moving tray anchor regression detected'
+            exit 1
+          fi
+
       - name: Lint JavaScript
         run: make check
 
@@ -78,22 +91,24 @@ jobs:
       - name: Write build summary
         run: |
           {
-            echo '## Dash to Dock — macOS Native v123'
+            echo '## Dash to Dock — macOS Native v124'
             echo ''
-            echo 'Download the **dash-to-dock-macos-native-v123-direct-input-stability** artifact below.'
+            echo 'Download the **dash-to-dock-macos-native-v124-stable-proxy-input** artifact below.'
             echo ''
-            echo '- direct thumbnail entry uses a stable pre-transform activation zone'
-            echo '- preview magnification can no longer toggle itself by moving under the pointer'
-            echo '- Trash/locations activate on the captured final-visual press'
-            echo '- Show Apps toggles on the captured final-visual press from desktop or overview'
-            echo '- normal app click, menu, long-press and drag/reorder paths stay native'
-            echo '- v122 tray geometry, DND, hover ownership and floating lifecycle remain intact'
+            echo '- thumbnail visuals are non-reactive and cannot move their own hover target'
+            echo '- one stable tray proxy owns thumbnail hover and activation'
+            echo '- tray base geometry no longer includes the preceding app spring offset'
+            echo '- reserved magnification space prevents the preceding app from overlapping the tray'
+            echo '- Trash/locations and Show Apps use dedicated final-visual reactive proxies'
+            echo '- location/Trash primary activation calls the location app directly'
+            echo '- old special-item stage capture is bypassed; normal app overflow capture remains'
+            echo '- v122 effective centers, DND geometry and floating lifecycle remain intact'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload ready-to-install extension
         uses: actions/upload-artifact@v4
         with:
-          name: dash-to-dock-macos-native-v123-direct-input-stability
+          name: dash-to-dock-macos-native-v124-stable-proxy-input
           path: _build/
           if-no-files-found: error
           retention-days: 30
