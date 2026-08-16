@@ -12,15 +12,22 @@ const SCALE_EPSILON = 0.0025;
 const VELOCITY_EPSILON = 0.02;
 
 /**
- * Makes minimized-window thumbnails participate in the same continuous
- * magnification field as normal macOS Dock items without changing the known-good
- * macDockEffects renderer.
+ * Fixed-slot minimized-window fish-eye.
  *
- * v114 intentionally created thumbnails outside renderer._items, so the main
- * fish-eye solver never saw them. This companion treats thumbnails as virtual
- * Dock items: same pointer-distance curve, same spring response/damping and an
- * edge-anchored compositor scale. Extra thumbnail growth is propagated only
- * toward the trailing Dock section so previews cannot overlap Trash/locations.
+ * The thumbnail tray is a separate Dock section. Each preview receives a slot
+ * large enough for its configured maximum scale. The preview actor keeps the
+ * same slot center for the entire hover animation and only its compositor scale
+ * changes. This makes magnification incapable of changing tray layout.
+ *
+ * The trailing system section is shifted once per frame by the maximum slot
+ * growth, not by the current spring scale. A fixed guard for the first trailing
+ * item also reserves its own maximum inward scale expansion. Consequently:
+ *
+ *  - direct thumbnail hover cannot make the tray slide under the pointer;
+ *  - neighboring previews cannot collide at maximum magnification;
+ *  - the last preview cannot grow into Trash/locations/Show Apps;
+ *  - material bounds stay based on fixed maximum slots instead of live growth;
+ *  - normal app fish-eye, input proxies, DND and autohide remain independent.
  */
 export class MacThumbnailFisheye {
     constructor(interactions) {
@@ -136,9 +143,6 @@ export class MacThumbnailFisheye {
             }
         });
 
-        // Thumbnails live in the detached visual layer rather than the native
-        // Dash allocation, so pointer events on them must wake the renderer's
-        // frame clock explicitly.
         for (const signal of ['enter-event', 'motion-event', 'leave-event']) {
             actor.connect(signal, () => {
                 renderer._wake?.();
@@ -168,7 +172,8 @@ export class MacThumbnailFisheye {
             return;
 
         const now = GLib.get_monotonic_time() / 1000;
-        const previousFrame = this._rendererFrameTimes.get(renderer) ?? now - 1000 / 60;
+        const previousFrame =
+            this._rendererFrameTimes.get(renderer) ?? now - 1000 / 60;
         let dt = (now - previousFrame) / 1000;
         if (!Number.isFinite(dt) || dt <= 0)
             dt = 1 / 60;
@@ -187,28 +192,32 @@ export class MacThumbnailFisheye {
         const damping = Math.max(0.5,
             this._settings.get_double('macos-spring-damping'));
 
-        // The stock renderer activation zone is still authoritative for normal
-        // Dock space. A directly hovered thumbnail also activates the wave because
-        // thumbnails can extend beyond the native Dash allocation after shifting.
-        const active = previews.some(preview => preview.actor.hover) ||
+        // v124's stable tray proxy extends this activation zone over the
+        // detached preview section. The preview visuals themselves do not need
+        // to own pointer hover and therefore cannot feed layout back into input.
+        const active =
             !!renderer._pointerInActivationZone?.(pointerX, pointerY);
 
         let moving = false;
         const geometry = [];
-        let cumulativeGrowth = 0;
-        let trayMinX = Number.POSITIVE_INFINITY;
-        let trayMinY = Number.POSITIVE_INFINITY;
-        let trayMaxX = Number.NEGATIVE_INFINITY;
-        let trayMaxY = Number.NEGATIVE_INFINITY;
+        let cumulativeSlotGrowth = 0;
 
         for (const preview of previews) {
             const actor = preview.actor;
             const [width, height] = actor.get_size();
             const baseX = actor.x;
             const baseY = actor.y;
+            const extent = horizontal ? width : height;
+            const slotGrowth = Math.max(0, extent * (maxScale - 1));
+
+            // The fixed slot shift is computed before pointer influence. The
+            // fish-eye distance therefore uses the visual slot center rather
+            // than the temporary unshifted layout position restored upstream.
+            const primaryShift =
+                cumulativeSlotGrowth + slotGrowth / 2;
             const center = horizontal
-                ? baseX + width / 2
-                : baseY + height / 2;
+                ? baseX + primaryShift + width / 2
+                : baseY + primaryShift + height / 2;
             const distance = Math.abs(center - pointerAxis);
             let influence = 0;
 
@@ -219,7 +228,8 @@ export class MacThumbnailFisheye {
             }
 
             const previewState = this._previewState(preview);
-            previewState.targetScale = 1 + (maxScale - 1) * influence;
+            previewState.targetScale =
+                1 + (maxScale - 1) * influence;
             [previewState.scale, previewState.velocity] = springStep(
                 previewState.scale,
                 previewState.velocity,
@@ -228,13 +238,14 @@ export class MacThumbnailFisheye {
                 damping,
                 dt);
 
-            if (Math.abs(previewState.scale - previewState.targetScale) > SCALE_EPSILON ||
-                Math.abs(previewState.velocity) > VELOCITY_EPSILON)
+            if (Math.abs(previewState.scale - previewState.targetScale) >
+                SCALE_EPSILON ||
+                Math.abs(previewState.velocity) > VELOCITY_EPSILON) {
                 moving = true;
+            }
 
-            const extent = horizontal ? width : height;
-            const growth = Math.max(0, extent * (previewState.scale - 1));
-            const primaryShift = cumulativeGrowth + growth / 2;
+            // Constant for a given setting/thumbnail size. This is the key
+            // invariant: the slot center never depends on the current spring.
             geometry.push({
                 preview,
                 width,
@@ -244,46 +255,75 @@ export class MacThumbnailFisheye {
                 scale: previewState.scale,
                 primaryShift,
             });
-            cumulativeGrowth += growth;
+            cumulativeSlotGrowth += slotGrowth;
         }
 
         const [pivotX, pivotY] = this._pivotForPosition(renderer);
+        let trayMinX = Number.POSITIVE_INFINITY;
+        let trayMinY = Number.POSITIVE_INFINITY;
+        let trayMaxX = Number.NEGATIVE_INFINITY;
+        let trayMaxY = Number.NEGATIVE_INFINITY;
+
         for (const entry of geometry) {
-            const {preview, width, height, baseX, baseY, scale, primaryShift} = entry;
+            const {
+                preview,
+                width,
+                height,
+                baseX,
+                baseY,
+                scale,
+                primaryShift,
+            } = entry;
             const x = baseX + (horizontal ? primaryShift : 0);
             const y = baseY + (horizontal ? 0 : primaryShift);
 
+            // Position is fixed at the center of the maximum-scale slot.
+            // Pointer motion changes only the compositor scale.
             preview.actor.set_position(Math.round(x), Math.round(y));
             preview.actor.set_scale(scale, scale);
 
-            // Magnified preview artwork bulges out of the material on the short
-            // axis exactly like app icons. On the Dock's long axis, however, the
-            // tray grows so following items never overlap the preview.
-            const visualX = x + pivotX * width * (1 - scale);
-            const visualY = y + pivotY * height * (1 - scale);
-            const visualWidth = width * scale;
-            const visualHeight = height * scale;
+            const slotX = x + pivotX * width * (1 - maxScale);
+            const slotY = y + pivotY * height * (1 - maxScale);
+            const slotWidth = width * maxScale;
+            const slotHeight = height * maxScale;
 
             if (horizontal) {
-                trayMinX = Math.min(trayMinX, visualX);
-                trayMaxX = Math.max(trayMaxX, visualX + visualWidth);
+                trayMinX = Math.min(trayMinX, slotX);
+                trayMaxX = Math.max(trayMaxX, slotX + slotWidth);
                 trayMinY = Math.min(trayMinY, baseY);
                 trayMaxY = Math.max(trayMaxY, baseY + height);
             } else {
                 trayMinX = Math.min(trayMinX, baseX);
                 trayMaxX = Math.max(trayMaxX, baseX + width);
-                trayMinY = Math.min(trayMinY, visualY);
-                trayMaxY = Math.max(trayMaxY, visualY + visualHeight);
+                trayMinY = Math.min(trayMinY, slotY);
+                trayMaxY = Math.max(trayMaxY, slotY + slotHeight);
             }
         }
 
-        if (cumulativeGrowth > 0.001 && state.specialIndex >= 0) {
-            const items = renderer._orderedItems();
-            for (let i = state.specialIndex; i < items.length; i++)
-                this._interactions._shiftPaintedItem(renderer, items[i], cumulativeGrowth);
-        }
-        state.shiftAmount += cumulativeGrowth;
+        // Reserve the entire preview slot growth plus half of the first
+        // trailing system item's own maximum growth. This prevents Trash,
+        // locations or Show Apps from scaling back into the final preview.
+        const boundary = this._trailingBoundaryItem(renderer, state);
+        const boundaryGuard = boundary
+            ? Math.max(0, boundary.baseSize * (maxScale - 1) / 2)
+            : 0;
+        const fixedTrailingShift =
+            cumulativeSlotGrowth + boundaryGuard;
 
+        if (fixedTrailingShift > 0.001 && state.specialIndex >= 0) {
+            const items = renderer._orderedItems();
+            for (let i = state.specialIndex; i < items.length; i++) {
+                this._interactions._shiftPaintedItem(
+                    renderer, items[i], fixedTrailingShift);
+            }
+        }
+
+        // If there is no Trash/location section, MacInputIntegrity uses this
+        // value later in the same post-paint chain to shift Show Apps.
+        state.shiftAmount += fixedTrailingShift;
+
+        // Material uses the maximum reserved slots, not live visual extents,
+        // so its long-axis size cannot breathe or slide during magnification.
         if (Number.isFinite(trayMinX)) {
             state.trayBounds = {
                 minX: trayMinX,
@@ -295,6 +335,13 @@ export class MacThumbnailFisheye {
 
         if (active || moving)
             renderer._wake?.();
+    }
+
+    _trailingBoundaryItem(renderer, state) {
+        const items = renderer._orderedItems?.() ?? renderer._items ?? [];
+        if (state.specialIndex >= 0)
+            return items[state.specialIndex] ?? null;
+        return items.find(item => item.kind === 'show-apps') ?? null;
     }
 
     _previewState(preview) {
