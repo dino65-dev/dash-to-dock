@@ -10,17 +10,24 @@ import {Main} from './dependencies/shell/ui.js';
 
 const SCALE_EPSILON = 0.0025;
 const VELOCITY_EPSILON = 0.02;
+const BOUNDARY_MIN_GAP = 6;
 
 /**
- * Makes minimized-window thumbnails participate in the same continuous
- * magnification field as normal macOS Dock items without changing the known-good
- * macDockEffects renderer.
+ * Static-layout minimized-window fish-eye.
  *
- * v114 intentionally created thumbnails outside renderer._items, so the main
- * fish-eye solver never saw them. This companion treats thumbnails as virtual
- * Dock items: same pointer-distance curve, same spring response/damping and an
- * edge-anchored compositor scale. Extra thumbnail growth is propagated only
- * toward the trailing Dock section so previews cannot overlap Trash/locations.
+ * v126 deliberately keeps the compact v124 tray geometry. Thumbnail actor
+ * allocations are laid out once by MacDirectInputStability and are never moved
+ * by the fish-eye spring. Pointer motion changes compositor scale only.
+ *
+ * This removes the two bad alternatives from the earlier experiments:
+ *  - v124 moved every later preview/system item by live spring growth;
+ *  - v125 reserved every preview's full maximum width and created huge gaps.
+ *
+ * The only extra layout reservation here is a small fixed guard between the
+ * final preview and the first trailing system item. The guard is calculated
+ * from the actual compact base gap plus the maximum inward/outward scale growth,
+ * so Trash/locations/Show Apps cannot overlap the final thumbnail without
+ * creating per-thumbnail empty slots.
  */
 export class MacThumbnailFisheye {
     constructor(interactions) {
@@ -136,9 +143,6 @@ export class MacThumbnailFisheye {
             }
         });
 
-        // Thumbnails live in the detached visual layer rather than the native
-        // Dash allocation, so pointer events on them must wake the renderer's
-        // frame clock explicitly.
         for (const signal of ['enter-event', 'motion-event', 'leave-event']) {
             actor.connect(signal, () => {
                 renderer._wake?.();
@@ -168,7 +172,8 @@ export class MacThumbnailFisheye {
             return;
 
         const now = GLib.get_monotonic_time() / 1000;
-        const previousFrame = this._rendererFrameTimes.get(renderer) ?? now - 1000 / 60;
+        const previousFrame =
+            this._rendererFrameTimes.get(renderer) ?? now - 1000 / 60;
         let dt = (now - previousFrame) / 1000;
         if (!Number.isFinite(dt) || dt <= 0)
             dt = 1 / 60;
@@ -186,29 +191,16 @@ export class MacThumbnailFisheye {
             this._settings.get_double('macos-spring-response'));
         const damping = Math.max(0.5,
             this._settings.get_double('macos-spring-damping'));
-
-        // The stock renderer activation zone is still authoritative for normal
-        // Dock space. A directly hovered thumbnail also activates the wave because
-        // thumbnails can extend beyond the native Dash allocation after shifting.
-        const active = previews.some(preview => preview.actor.hover) ||
+        const active =
             !!renderer._pointerInActivationZone?.(pointerX, pointerY);
 
         let moving = false;
-        const geometry = [];
-        let cumulativeGrowth = 0;
-        let trayMinX = Number.POSITIVE_INFINITY;
-        let trayMinY = Number.POSITIVE_INFINITY;
-        let trayMaxX = Number.NEGATIVE_INFINITY;
-        let trayMaxY = Number.NEGATIVE_INFINITY;
-
         for (const preview of previews) {
             const actor = preview.actor;
             const [width, height] = actor.get_size();
-            const baseX = actor.x;
-            const baseY = actor.y;
             const center = horizontal
-                ? baseX + width / 2
-                : baseY + height / 2;
+                ? actor.x + width / 2
+                : actor.y + height / 2;
             const distance = Math.abs(center - pointerAxis);
             let influence = 0;
 
@@ -219,7 +211,8 @@ export class MacThumbnailFisheye {
             }
 
             const previewState = this._previewState(preview);
-            previewState.targetScale = 1 + (maxScale - 1) * influence;
+            previewState.targetScale =
+                1 + (maxScale - 1) * influence;
             [previewState.scale, previewState.velocity] = springStep(
                 previewState.scale,
                 previewState.velocity,
@@ -228,73 +221,74 @@ export class MacThumbnailFisheye {
                 damping,
                 dt);
 
-            if (Math.abs(previewState.scale - previewState.targetScale) > SCALE_EPSILON ||
+            if (Math.abs(previewState.scale - previewState.targetScale) >
+                SCALE_EPSILON ||
                 Math.abs(previewState.velocity) > VELOCITY_EPSILON)
                 moving = true;
 
-            const extent = horizontal ? width : height;
-            const growth = Math.max(0, extent * (previewState.scale - 1));
-            const primaryShift = cumulativeGrowth + growth / 2;
-            geometry.push({
-                preview,
-                width,
-                height,
-                baseX,
-                baseY,
-                scale: previewState.scale,
-                primaryShift,
-            });
-            cumulativeGrowth += growth;
+            // Upstream restores the compact actor allocation every frame.
+            // Never translate it here: scale is purely a compositor transform.
+            actor.set_scale(previewState.scale, previewState.scale);
         }
 
-        const [pivotX, pivotY] = this._pivotForPosition(renderer);
-        for (const entry of geometry) {
-            const {preview, width, height, baseX, baseY, scale, primaryShift} = entry;
-            const x = baseX + (horizontal ? primaryShift : 0);
-            const y = baseY + (horizontal ? 0 : primaryShift);
+        const boundary = this._trailingBoundaryItem(renderer, state);
+        const lastPreview = previews[previews.length - 1];
+        const boundaryGuard = this._boundaryGuard(
+            renderer, state, lastPreview, boundary, maxScale);
 
-            preview.actor.set_position(Math.round(x), Math.round(y));
-            preview.actor.set_scale(scale, scale);
-
-            // Magnified preview artwork bulges out of the material on the short
-            // axis exactly like app icons. On the Dock's long axis, however, the
-            // tray grows so following items never overlap the preview.
-            const visualX = x + pivotX * width * (1 - scale);
-            const visualY = y + pivotY * height * (1 - scale);
-            const visualWidth = width * scale;
-            const visualHeight = height * scale;
-
-            if (horizontal) {
-                trayMinX = Math.min(trayMinX, visualX);
-                trayMaxX = Math.max(trayMaxX, visualX + visualWidth);
-                trayMinY = Math.min(trayMinY, baseY);
-                trayMaxY = Math.max(trayMaxY, baseY + height);
-            } else {
-                trayMinX = Math.min(trayMinX, baseX);
-                trayMaxX = Math.max(trayMaxX, baseX + width);
-                trayMinY = Math.min(trayMinY, visualY);
-                trayMaxY = Math.max(trayMaxY, visualY + visualHeight);
+        if (boundaryGuard > 0.001 && state.specialIndex >= 0) {
+            const items = renderer._orderedItems();
+            for (let i = state.specialIndex; i < items.length; i++) {
+                this._interactions._shiftPaintedItem(
+                    renderer, items[i], boundaryGuard);
             }
         }
 
-        if (cumulativeGrowth > 0.001 && state.specialIndex >= 0) {
-            const items = renderer._orderedItems();
-            for (let i = state.specialIndex; i < items.length; i++)
-                this._interactions._shiftPaintedItem(renderer, items[i], cumulativeGrowth);
-        }
-        state.shiftAmount += cumulativeGrowth;
+        // With no Trash/location section, MacInputIntegrity consumes this value
+        // later in the same post-paint chain when it shifts Show Apps.
+        state.shiftAmount += boundaryGuard;
 
-        if (Number.isFinite(trayMinX)) {
-            state.trayBounds = {
-                minX: trayMinX,
-                minY: trayMinY,
-                maxX: trayMaxX,
-                maxY: trayMaxY,
-            };
-        }
-
+        // Keep state.trayBounds from the compact v124 layout. Magnified artwork
+        // may bulge outside the material just like normal Dock icons, but the
+        // material itself never breathes or slides with the thumbnail spring.
         if (active || moving)
             renderer._wake?.();
+    }
+
+    _boundaryGuard(renderer, state, preview, boundary, maxScale) {
+        if (!preview?.actor || !boundary?.baseRect)
+            return 0;
+
+        const [width, height] = preview.actor.get_size();
+        const horizontal = renderer._dock.isHorizontal;
+        const previewExtent = horizontal ? width : height;
+        const boundaryExtent = Math.max(1,
+            boundary.baseSize ?? (horizontal
+                ? boundary.baseRect.width
+                : boundary.baseRect.height));
+        const previewGrowth =
+            previewExtent * Math.max(0, maxScale - 1) / 2;
+        const boundaryGrowth =
+            boundaryExtent * Math.max(0, maxScale - 1) / 2;
+        const previewEnd = horizontal
+            ? preview.actor.x + width
+            : preview.actor.y + height;
+        const boundaryStart = horizontal
+            ? boundary.baseRect.x + state.shiftAmount
+            : boundary.baseRect.y + state.shiftAmount;
+        const compactGap = Number.isFinite(boundaryStart - previewEnd)
+            ? Math.max(0, boundaryStart - previewEnd)
+            : 0;
+
+        return Math.max(0,
+            previewGrowth + boundaryGrowth + BOUNDARY_MIN_GAP - compactGap);
+    }
+
+    _trailingBoundaryItem(renderer, state) {
+        const items = renderer._orderedItems?.() ?? renderer._items ?? [];
+        if (state.specialIndex >= 0)
+            return items[state.specialIndex] ?? null;
+        return items.find(item => item.kind === 'show-apps') ?? null;
     }
 
     _previewState(preview) {
