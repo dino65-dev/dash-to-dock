@@ -1,0 +1,622 @@
+--- a/macDockInteractions.js
++++ b/macDockInteractions.js
+@@ -15,11 +15,13 @@
+     PopupMenu,
+ } from './dependencies/shell/ui.js';
+ 
++import {
++    computeTrayLayout,
++    TRAY_DIVIDER_GAP,
++} from './macTrayLayout.js';
++
+ const MACOS_SCHEMA = 'org.gnome.shell.extensions.dash-to-dock.macos';
+ const MATERIAL_MARGIN = 5;
+-const TRAY_GAP = 5;
+-const TRAY_DIVIDER_GAP = 8;
+-const TRAY_PADDING = 8;
+ const LAUNCH_TIMEOUT_MS = 20_000;
+ const RECENT_RELOAD_DELAY_MS = 180;
+ const RECENT_CACHE_LIMIT = 80;
+@@ -182,6 +184,7 @@
+             trayActive: false,
+             specialIndex: -1,
+             shiftAmount: 0,
++            boundaryGuard: 0,
+             originalPaintItems: renderer._paintItems,
+             originalPaintMaterial: renderer._paintMaterial,
+         };
+@@ -451,6 +454,7 @@
+         state.trayBounds = null;
+         state.specialIndex = -1;
+         state.shiftAmount = 0;
++        state.boundaryGuard = 0;
+ 
+         if (!state.trayActive) {
+             for (const preview of state.thumbnails.values())
+@@ -460,7 +464,8 @@
+ 
+         const items = renderer._orderedItems();
+         const specialIndex = items.findIndex(item =>
+-            item.kind === 'app' && (item.app?.location || item.app?.isTrash));
++            item.kind === 'show-apps' ||
++            (item.kind === 'app' && (item.app?.location || item.app?.isTrash)));
+         state.specialIndex = specialIndex;
+ 
+         let previous = null;
+@@ -478,17 +483,6 @@
+         const previews = state.minimizedWindows
+             .map(window => state.thumbnails.get(window))
+             .filter(Boolean);
+-        const totalPreviewExtent = previews.reduce((sum, preview) => {
+-            const [width, height] = preview.actor.get_size();
+-            return sum + (renderer._dock.isHorizontal ? width : height);
+-        }, 0) + Math.max(0, previews.length - 1) * TRAY_GAP;
+-        state.shiftAmount = totalPreviewExtent + TRAY_PADDING * 2 + TRAY_DIVIDER_GAP;
+-
+-        if (specialIndex >= 0) {
+-            for (let i = specialIndex; i < items.length; i++)
+-                this._shiftPaintedItem(renderer, items[i], state.shiftAmount);
+-        }
+-
+         this._positionThumbnails(renderer, state, previous, previews);
+     }
+ 
+@@ -524,40 +518,45 @@
+     }
+ 
+     _positionThumbnails(renderer, state, previous, previews) {
+-        const horizontal = renderer._dock.isHorizontal;
+-        const previousEnd = horizontal
+-            ? previous.baseRect.x + previous.offset + previous.baseRect.width
+-            : previous.baseRect.y + previous.offset + previous.baseRect.height;
+-        let cursor = previousEnd + TRAY_DIVIDER_GAP + TRAY_PADDING;
+-        let minX = Number.POSITIVE_INFINITY;
+-        let minY = Number.POSITIVE_INFINITY;
+-        let maxX = Number.NEGATIVE_INFINITY;
+-        let maxY = Number.NEGATIVE_INFINITY;
+-
+-        for (const preview of previews) {
++        const items = renderer._orderedItems();
++        const boundary = state.specialIndex >= 0
++            ? items[state.specialIndex] ?? null
++            : null;
++        const previewSizes = previews.map(preview => {
+             const [width, height] = preview.actor.get_size();
+-            let x;
+-            let y;
+-            if (horizontal) {
+-                x = cursor;
+-                y = previous.baseCenterY - height / 2;
+-                cursor += width + TRAY_GAP;
+-            } else {
+-                x = previous.baseCenterX - width / 2;
+-                y = cursor;
+-                cursor += height + TRAY_GAP;
+-            }
++            return {width, height};
++        });
++        const layout = computeTrayLayout({
++            horizontal: renderer._dock.isHorizontal,
++            previousRect: previous.baseRect,
++            previousCenterX: previous.baseCenterX,
++            previousCenterY: previous.baseCenterY,
++            previewSizes,
++            boundaryRect: boundary?.baseRect ?? null,
++        });
++
++        if (!layout) {
++            state.trayBounds = null;
++            return;
++        }
+ 
+-            preview.actor.set_position(Math.round(x), Math.round(y));
++        for (let i = 0; i < previews.length; i++) {
++            const preview = previews[i];
++            const rect = layout.previewRects[i];
++            if (!rect)
++                continue;
++            preview.actor.set_position(Math.round(rect.x), Math.round(rect.y));
+             preview.actor.show();
+-            minX = Math.min(minX, x);
+-            minY = Math.min(minY, y);
+-            maxX = Math.max(maxX, x + width);
+-            maxY = Math.max(maxY, y + height);
+         }
+ 
+-        if (Number.isFinite(minX))
+-            state.trayBounds = {minX, minY, maxX, maxY};
++        state.trayBounds = layout.trayBounds;
++        state.shiftAmount = layout.boundaryShift;
++        if (state.specialIndex >= 0 && Math.abs(state.shiftAmount) > 0.001) {
++            for (let i = state.specialIndex; i < items.length; i++) {
++                this._shiftPaintedItem(
++                    renderer, items[i], state.shiftAmount);
++            }
++        }
+     }
+ 
+     _postPaintMaterial(renderer, state) {
+@@ -622,14 +621,14 @@
+             return;
+ 
+         if (renderer._dock.isHorizontal) {
+-            const previousEnd = previous.baseRect.x + previous.offset + previous.baseRect.width;
++            const previousEnd = previous.baseRect.x + previous.baseRect.width;
+             const x = previousEnd + TRAY_DIVIDER_GAP / 2;
+             const height = Math.max(18, Math.min(rect.height * 0.62, previous.baseSize * 0.78));
+             renderer._divider.set_position(
+                 Math.round(x), Math.round(rect.y + (rect.height - height) / 2));
+             renderer._divider.set_size(1, Math.round(height));
+         } else {
+-            const previousEnd = previous.baseRect.y + previous.offset + previous.baseRect.height;
++            const previousEnd = previous.baseRect.y + previous.baseRect.height;
+             const y = previousEnd + TRAY_DIVIDER_GAP / 2;
+             const width = Math.max(18, Math.min(rect.width * 0.62, previous.baseSize * 0.78));
+             renderer._divider.set_position(
+--- a/macDirectInputStability.js
++++ b/macDirectInputStability.js
+@@ -3,9 +3,6 @@
+ import {Clutter, St} from './dependencies/gi.js';
+ import {Main} from './dependencies/shell/ui.js';
+ 
+-const TRAY_GAP = 5;
+-const TRAY_DIVIDER_GAP = 8;
+-const TRAY_PADDING = 8;
+ const INPUT_PADDING = 10;
+ 
+ /**
+@@ -21,8 +18,8 @@
+  * This layer removes that feedback loop instead of damping it:
+  *  - thumbnails are visual-only actors;
+  *  - one stable transparent tray proxy owns thumbnail hover/click input;
+- *  - the tray is anchored to untransformed Dash base geometry with enough
+- *    reserved room for the preceding icon's maximum magnification;
++ *  - tray layout is owned only by MacDockInteractions; this class never moves
++ *    thumbnails or trailing system items;
+  *  - Trash/locations and Show Apps get transparent reactive proxies over their
+  *    final compositor rectangles, so native parent clipping is irrelevant;
+  *  - the old stage-capture special-item router is bypassed, while normal app
+@@ -42,7 +39,6 @@
+         if (!this._interactions || !this._macEffects)
+             return;
+ 
+-        this._replaceThumbnailLayout();
+         this._wrapPostPaintItems();
+ 
+         this._docksReadyId = this._dockManager?.connect?.(
+@@ -62,17 +58,12 @@
+         for (const renderer of [...this._rendererStates.keys()])
+             this._unpatchRenderer(renderer);
+ 
+-        if (this._originalPositionThumbnails && this._interactions) {
+-            this._interactions._positionThumbnails =
+-                this._originalPositionThumbnails;
+-        }
+         if (this._originalPostPaintItems && this._interactions)
+             this._interactions._postPaintItems = this._originalPostPaintItems;
+ 
+         this._rendererStates.clear();
+         this._rendererStates = null;
+         this._previewBaseRects = new WeakMap();
+-        this._originalPositionThumbnails = null;
+         this._originalPostPaintItems = null;
+         this._settings = null;
+         this._dockManager = null;
+@@ -82,17 +73,6 @@
+         this._interactions = null;
+     }
+ 
+-    _replaceThumbnailLayout() {
+-        const interactions = this._interactions;
+-        if (typeof interactions?._positionThumbnails !== 'function')
+-            return;
+-
+-        this._originalPositionThumbnails = interactions._positionThumbnails;
+-        interactions._positionThumbnails =
+-            (renderer, state, previous, previews) =>
+-                this._positionThumbnails(renderer, state, previous, previews);
+-    }
+-
+     _wrapPostPaintItems() {
+         const interactions = this._interactions;
+         if (typeof interactions?._postPaintItems !== 'function')
+@@ -239,112 +219,61 @@
+         return proxy;
+     }
+ 
+-    _positionThumbnails(renderer, interactionState, previous, previews) {
+-        const rendererState = this._rendererStates?.get(renderer);
+-        const horizontal = renderer?._dock?.isHorizontal;
+-        if (!previous?.baseRect || !previews?.length) {
+-            interactionState.trayBounds = null;
+-            if (rendererState)
+-                rendererState.trayInputRect = null;
+-            return;
+-        }
+-
+-        const maxScale = 1 + Math.max(0,
+-            this._settings?.get_double('macos-magnification') ?? 0);
+-        const reserve = Math.max(0,
+-            previous.baseSize * (maxScale - 1) / 2);
+-
+-        // The stable visual gap is real layout space, so trailing native/system
+-        // items must receive it too. If Trash/locations exist they were already
+-        // shifted by MacDockInteractions; if they do not, v122 will later use
+-        // the increased shiftAmount when it makes Show Apps the boundary.
+-        if (reserve > 0) {
+-            if (interactionState.specialIndex >= 0) {
+-                const items = renderer._orderedItems?.() ?? renderer._items ?? [];
+-                for (let i = interactionState.specialIndex; i < items.length; i++)
+-                    this._interactions._shiftPaintedItem(renderer, items[i], reserve);
+-            }
+-            interactionState.shiftAmount += reserve;
+-        }
+-
+-        const previousEnd = horizontal
+-            ? previous.baseRect.x + previous.baseRect.width
+-            : previous.baseRect.y + previous.baseRect.height;
+-        let cursor = previousEnd + reserve + TRAY_DIVIDER_GAP + TRAY_PADDING;
+-        let minX = Number.POSITIVE_INFINITY;
+-        let minY = Number.POSITIVE_INFINITY;
+-        let maxX = Number.NEGATIVE_INFINITY;
+-        let maxY = Number.NEGATIVE_INFINITY;
+-        let primaryExtent = 0;
+-        let maxPreviewExtent = 0;
++    _syncPreviewGeometry(renderer, interactionState, state) {
++        const previews = interactionState?.minimizedWindows
++            ?.map(window => interactionState.thumbnails.get(window))
++            ?.filter(Boolean) ?? [];
++        let maxCrossExtent = 0;
++        let maxPrimaryExtent = 0;
+ 
+         for (const preview of previews) {
++            this._configurePreview(renderer, preview);
+             const actor = preview?.actor;
+             if (!actor)
+                 continue;
+-
+-            this._configurePreview(renderer, preview);
+             const [width, height] = actor.get_size?.() ?? [0, 0];
+             if (!(width > 0) || !(height > 0))
+                 continue;
+-
+-            let x;
+-            let y;
+-            if (horizontal) {
+-                x = cursor;
+-                y = previous.baseCenterY - height / 2;
+-                cursor += width + TRAY_GAP;
+-                primaryExtent += width;
+-                maxPreviewExtent = Math.max(maxPreviewExtent, height);
+-            } else {
+-                x = previous.baseCenterX - width / 2;
+-                y = cursor;
+-                cursor += height + TRAY_GAP;
+-                primaryExtent += height;
+-                maxPreviewExtent = Math.max(maxPreviewExtent, width);
+-            }
+-
+-            actor.set_position(Math.round(x), Math.round(y));
+-            actor.show();
+-            const rect = {x, y, width, height};
+-            this._previewBaseRects.set(actor, rect);
+-            minX = Math.min(minX, x);
+-            minY = Math.min(minY, y);
+-            maxX = Math.max(maxX, x + width);
+-            maxY = Math.max(maxY, y + height);
++            this._previewBaseRects.set(actor, {
++                x: actor.x,
++                y: actor.y,
++                width,
++                height,
++            });
++            maxCrossExtent = Math.max(maxCrossExtent,
++                renderer._dock.isHorizontal ? height : width);
++            maxPrimaryExtent = Math.max(maxPrimaryExtent,
++                renderer._dock.isHorizontal ? width : height);
+         }
+ 
+-        if (!Number.isFinite(minX)) {
+-            interactionState.trayBounds = null;
+-            if (rendererState)
+-                rendererState.trayInputRect = null;
++        const bounds = interactionState?.trayBounds;
++        if (!bounds || !previews.length) {
++            state.trayInputRect = null;
+             return;
+         }
+ 
+-        interactionState.trayBounds = {minX, minY, maxX, maxY};
+-        if (!rendererState)
+-            return;
+-
+-        const gaps = Math.max(0, previews.length - 1) * TRAY_GAP;
+-        primaryExtent += gaps;
+-        const growthReserve = Math.max(INPUT_PADDING,
+-            primaryExtent * Math.max(0, maxScale - 1) + INPUT_PADDING);
++        const maxScale = 1 + Math.max(0,
++            this._settings?.get_double('macos-magnification') ?? 0);
++        const magnification = Math.max(0, maxScale - 1);
+         const crossReserve = Math.max(INPUT_PADDING,
+-            maxPreviewExtent * Math.max(0, maxScale - 1) / 2 + INPUT_PADDING);
+-
+-        if (horizontal) {
+-            rendererState.trayInputRect = {
+-                x: minX - INPUT_PADDING,
+-                y: minY - crossReserve,
+-                width: maxX - minX + growthReserve + INPUT_PADDING,
+-                height: maxY - minY + crossReserve * 2,
++            maxCrossExtent * magnification + INPUT_PADDING);
++        const trailingReserve = previews.length === 1
++            ? maxPrimaryExtent * magnification + INPUT_PADDING
++            : INPUT_PADDING;
++
++        if (renderer._dock.isHorizontal) {
++            state.trayInputRect = {
++                x: bounds.minX - INPUT_PADDING,
++                y: bounds.minY - crossReserve,
++                width: bounds.maxX - bounds.minX + INPUT_PADDING + trailingReserve,
++                height: bounds.maxY - bounds.minY + crossReserve * 2,
+             };
+         } else {
+-            rendererState.trayInputRect = {
+-                x: minX - crossReserve,
+-                y: minY - INPUT_PADDING,
+-                width: maxX - minX + crossReserve * 2,
+-                height: maxY - minY + growthReserve + INPUT_PADDING,
++            state.trayInputRect = {
++                x: bounds.minX - crossReserve,
++                y: bounds.minY - INPUT_PADDING,
++                width: bounds.maxX - bounds.minX + crossReserve * 2,
++                height: bounds.maxY - bounds.minY + INPUT_PADDING + trailingReserve,
+             };
+         }
+     }
+@@ -374,6 +303,7 @@
+             return;
+ 
+         this._installCaptureBypass(renderer, state);
++        this._syncPreviewGeometry(renderer, interactionState, state);
+         this._syncTrayProxy(renderer, interactionState, state);
+         this._syncSpecialProxies(renderer, state);
+     }
+--- a/macThumbnailFisheyeBase.js
++++ b/macThumbnailFisheyeBase.js
+@@ -8,19 +8,20 @@
+ 
+ import {Main} from './dependencies/shell/ui.js';
+ 
++import {computeTrailingOverlapGuard} from './macTrayLayout.js';
++
+ const SCALE_EPSILON = 0.0025;
+ const VELOCITY_EPSILON = 0.02;
++const BOUNDARY_MIN_GAP = 6;
+ 
+ /**
+- * Makes minimized-window thumbnails participate in the same continuous
+- * magnification field as normal macOS Dock items without changing the known-good
+- * macDockEffects renderer.
++ * Magnifies minimized-window previews without owning layout.
+  *
+- * v114 intentionally created thumbnails outside renderer._items, so the main
+- * fish-eye solver never saw them. This companion treats thumbnails as virtual
+- * Dock items: same pointer-distance curve, same spring response/damping and an
+- * edge-anchored compositor scale. Extra thumbnail growth is propagated only
+- * toward the trailing Dock section so previews cannot overlap Trash/locations.
++ * MacDockInteractions establishes the compact tray allocation once per frame.
++ * This layer changes only compositor scale. No thumbnail position, material
++ * width, or base trailing-system displacement is derived from spring growth.
++ * If a single/centered preview visually reaches the trailing system section,
++ * only that section receives the exact positive overlap correction needed.
+  */
+ export class MacThumbnailFisheye {
+     constructor(interactions) {
+@@ -168,7 +169,8 @@
+             return;
+ 
+         const now = GLib.get_monotonic_time() / 1000;
+-        const previousFrame = this._rendererFrameTimes.get(renderer) ?? now - 1000 / 60;
++        const previousFrame =
++            this._rendererFrameTimes.get(renderer) ?? now - 1000 / 60;
+         let dt = (now - previousFrame) / 1000;
+         if (!Number.isFinite(dt) || dt <= 0)
+             dt = 1 / 60;
+@@ -186,40 +188,30 @@
+             this._settings.get_double('macos-spring-response'));
+         const damping = Math.max(0.5,
+             this._settings.get_double('macos-spring-damping'));
+-
+-        // The stock renderer activation zone is still authoritative for normal
+-        // Dock space. A directly hovered thumbnail also activates the wave because
+-        // thumbnails can extend beyond the native Dash allocation after shifting.
+-        const active = previews.some(preview => preview.actor.hover) ||
++        const active =
+             !!renderer._pointerInActivationZone?.(pointerX, pointerY);
+-
+         let moving = false;
+-        const geometry = [];
+-        let cumulativeGrowth = 0;
+-        let trayMinX = Number.POSITIVE_INFINITY;
+-        let trayMinY = Number.POSITIVE_INFINITY;
+-        let trayMaxX = Number.NEGATIVE_INFINITY;
+-        let trayMaxY = Number.NEGATIVE_INFINITY;
++        const scaled = [];
+ 
+-        for (const preview of previews) {
++        for (let i = 0; i < previews.length; i++) {
++            const preview = previews[i];
+             const actor = preview.actor;
+             const [width, height] = actor.get_size();
+-            const baseX = actor.x;
+-            const baseY = actor.y;
+             const center = horizontal
+-                ? baseX + width / 2
+-                : baseY + height / 2;
++                ? actor.x + width / 2
++                : actor.y + height / 2;
+             const distance = Math.abs(center - pointerAxis);
+             let influence = 0;
+ 
+             if (active && distance < radius) {
+                 const q = Math.max(0, Math.min(1, 1 - distance / radius));
+-                const s = Math.sin(q * Math.PI / 2);
+-                influence = s * s;
++                const sin = Math.sin(q * Math.PI / 2);
++                influence = sin * sin;
+             }
+ 
+             const previewState = this._previewState(preview);
+-            previewState.targetScale = 1 + (maxScale - 1) * influence;
++            previewState.targetScale =
++                1 + (maxScale - 1) * influence;
+             [previewState.scale, previewState.velocity] = springStep(
+                 previewState.scale,
+                 previewState.velocity,
+@@ -228,75 +220,68 @@
+                 damping,
+                 dt);
+ 
+-            if (Math.abs(previewState.scale - previewState.targetScale) > SCALE_EPSILON ||
++            if (Math.abs(previewState.scale - previewState.targetScale) >
++                SCALE_EPSILON ||
+                 Math.abs(previewState.velocity) > VELOCITY_EPSILON)
+                 moving = true;
+ 
+-            const extent = horizontal ? width : height;
+-            const growth = Math.max(0, extent * (previewState.scale - 1));
+-            const primaryShift = cumulativeGrowth + growth / 2;
+-            geometry.push({
+-                preview,
+-                width,
+-                height,
+-                baseX,
+-                baseY,
+-                scale: previewState.scale,
+-                primaryShift,
+-            });
+-            cumulativeGrowth += growth;
++            const [pivotX, pivotY] = this._pivotForPreview(
++                renderer, i, previews.length);
++            actor.set_pivot_point(pivotX, pivotY);
++            actor.set_scale(previewState.scale, previewState.scale);
++            scaled.push({actor, scale: previewState.scale});
+         }
+ 
+-        const [pivotX, pivotY] = this._pivotForPosition(renderer);
+-        for (const entry of geometry) {
+-            const {preview, width, height, baseX, baseY, scale, primaryShift} = entry;
+-            const x = baseX + (horizontal ? primaryShift : 0);
+-            const y = baseY + (horizontal ? 0 : primaryShift);
+-
+-            preview.actor.set_position(Math.round(x), Math.round(y));
+-            preview.actor.set_scale(scale, scale);
+-
+-            // Magnified preview artwork bulges out of the material on the short
+-            // axis exactly like app icons. On the Dock's long axis, however, the
+-            // tray grows so following items never overlap the preview.
+-            const visualX = x + pivotX * width * (1 - scale);
+-            const visualY = y + pivotY * height * (1 - scale);
+-            const visualWidth = width * scale;
+-            const visualHeight = height * scale;
+-
+-            if (horizontal) {
+-                trayMinX = Math.min(trayMinX, visualX);
+-                trayMaxX = Math.max(trayMaxX, visualX + visualWidth);
+-                trayMinY = Math.min(trayMinY, baseY);
+-                trayMaxY = Math.max(trayMaxY, baseY + height);
+-            } else {
+-                trayMinX = Math.min(trayMinX, baseX);
+-                trayMaxX = Math.max(trayMaxX, baseX + width);
+-                trayMinY = Math.min(trayMinY, visualY);
+-                trayMaxY = Math.max(trayMaxY, visualY + visualHeight);
+-            }
+-        }
++        // Keep the most magnified preview above neighboring preview artwork.
++        scaled.sort((a, b) => a.scale - b.scale);
++        for (const entry of scaled)
++            entry.actor.raise_top?.();
++
++        const boundary = this._trailingBoundaryItem(renderer, state);
++        const lastPreview = previews.at(-1);
++        const guard = computeTrailingOverlapGuard({
++            horizontal,
++            previewRect: transformedRect(lastPreview?.actor),
++            boundaryRect: transformedRect(boundary?.actor),
++            minGap: BOUNDARY_MIN_GAP,
++        });
+ 
+-        if (cumulativeGrowth > 0.001 && state.specialIndex >= 0) {
++        if (guard > 0.001 && state.specialIndex >= 0) {
+             const items = renderer._orderedItems();
+             for (let i = state.specialIndex; i < items.length; i++)
+-                this._interactions._shiftPaintedItem(renderer, items[i], cumulativeGrowth);
+-        }
+-        state.shiftAmount += cumulativeGrowth;
+-
+-        if (Number.isFinite(trayMinX)) {
+-            state.trayBounds = {
+-                minX: trayMinX,
+-                minY: trayMinY,
+-                maxX: trayMaxX,
+-                maxY: trayMaxY,
+-            };
++                this._interactions._shiftPaintedItem(renderer, items[i], guard);
++            state.shiftAmount += guard;
++            state.boundaryGuard = guard;
++        } else {
++            state.boundaryGuard = 0;
+         }
+ 
+         if (active || moving)
+             renderer._wake?.();
+     }
+ 
++    _trailingBoundaryItem(renderer, state) {
++        const items = renderer._orderedItems?.() ?? renderer._items ?? [];
++        if (state.specialIndex >= 0)
++            return items[state.specialIndex] ?? null;
++        return null;
++    }
++
++    _pivotForPreview(renderer, index, count) {
++        const primary = count > 1 ? index / (count - 1) : 0.25;
++        switch (renderer._dock.position) {
++        case St.Side.TOP:
++            return [primary, 0];
++        case St.Side.LEFT:
++            return [0, primary];
++        case St.Side.RIGHT:
++            return [1, primary];
++        case St.Side.BOTTOM:
++        default:
++            return [primary, 1];
++        }
++    }
++
+     _previewState(preview) {
+         let state = this._previewStates.get(preview);
+         if (!state) {
+@@ -321,6 +306,23 @@
+     }
+ }
+ 
++
++function transformedRect(actor) {
++    if (!actor?.visible)
++        return null;
++
++    try {
++        const [x, y] = actor.get_transformed_position();
++        const [width, height] = actor.get_transformed_size();
++        if ([x, y, width, height].every(Number.isFinite) &&
++            width > 0 && height > 0)
++            return {x, y, width, height};
++    } catch {
++        // Actor may disappear during a window/dock rebuild.
++    }
++    return null;
++}
++
+ /**
+  * Stable implicit integration of the same damped second-order spring used by
+  * macDockEffects.js:
