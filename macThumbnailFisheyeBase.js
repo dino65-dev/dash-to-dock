@@ -8,19 +8,20 @@ import {
 
 import {Main} from './dependencies/shell/ui.js';
 
+import {computeTrailingOverlapGuard} from './macTrayLayout.js';
+
 const SCALE_EPSILON = 0.0025;
 const VELOCITY_EPSILON = 0.02;
+const BOUNDARY_MIN_GAP = 6;
 
 /**
- * Makes minimized-window thumbnails participate in the same continuous
- * magnification field as normal macOS Dock items without changing the known-good
- * macDockEffects renderer.
+ * Magnifies minimized-window previews without owning layout.
  *
- * v114 intentionally created thumbnails outside renderer._items, so the main
- * fish-eye solver never saw them. This companion treats thumbnails as virtual
- * Dock items: same pointer-distance curve, same spring response/damping and an
- * edge-anchored compositor scale. Extra thumbnail growth is propagated only
- * toward the trailing Dock section so previews cannot overlap Trash/locations.
+ * MacDockInteractions establishes the compact tray allocation once per frame.
+ * This layer changes only compositor scale. No thumbnail position, material
+ * width, or base trailing-system displacement is derived from spring growth.
+ * If a single/centered preview visually reaches the trailing system section,
+ * only that section receives the exact positive overlap correction needed.
  */
 export class MacThumbnailFisheye {
     constructor(interactions) {
@@ -168,7 +169,8 @@ export class MacThumbnailFisheye {
             return;
 
         const now = GLib.get_monotonic_time() / 1000;
-        const previousFrame = this._rendererFrameTimes.get(renderer) ?? now - 1000 / 60;
+        const previousFrame =
+            this._rendererFrameTimes.get(renderer) ?? now - 1000 / 60;
         let dt = (now - previousFrame) / 1000;
         if (!Number.isFinite(dt) || dt <= 0)
             dt = 1 / 60;
@@ -186,40 +188,30 @@ export class MacThumbnailFisheye {
             this._settings.get_double('macos-spring-response'));
         const damping = Math.max(0.5,
             this._settings.get_double('macos-spring-damping'));
-
-        // The stock renderer activation zone is still authoritative for normal
-        // Dock space. A directly hovered thumbnail also activates the wave because
-        // thumbnails can extend beyond the native Dash allocation after shifting.
-        const active = previews.some(preview => preview.actor.hover) ||
+        const active =
             !!renderer._pointerInActivationZone?.(pointerX, pointerY);
-
         let moving = false;
-        const geometry = [];
-        let cumulativeGrowth = 0;
-        let trayMinX = Number.POSITIVE_INFINITY;
-        let trayMinY = Number.POSITIVE_INFINITY;
-        let trayMaxX = Number.NEGATIVE_INFINITY;
-        let trayMaxY = Number.NEGATIVE_INFINITY;
+        const scaled = [];
 
-        for (const preview of previews) {
+        for (let i = 0; i < previews.length; i++) {
+            const preview = previews[i];
             const actor = preview.actor;
             const [width, height] = actor.get_size();
-            const baseX = actor.x;
-            const baseY = actor.y;
             const center = horizontal
-                ? baseX + width / 2
-                : baseY + height / 2;
+                ? actor.x + width / 2
+                : actor.y + height / 2;
             const distance = Math.abs(center - pointerAxis);
             let influence = 0;
 
             if (active && distance < radius) {
                 const q = Math.max(0, Math.min(1, 1 - distance / radius));
-                const s = Math.sin(q * Math.PI / 2);
-                influence = s * s;
+                const sin = Math.sin(q * Math.PI / 2);
+                influence = sin * sin;
             }
 
             const previewState = this._previewState(preview);
-            previewState.targetScale = 1 + (maxScale - 1) * influence;
+            previewState.targetScale =
+                1 + (maxScale - 1) * influence;
             [previewState.scale, previewState.velocity] = springStep(
                 previewState.scale,
                 previewState.velocity,
@@ -228,73 +220,66 @@ export class MacThumbnailFisheye {
                 damping,
                 dt);
 
-            if (Math.abs(previewState.scale - previewState.targetScale) > SCALE_EPSILON ||
+            if (Math.abs(previewState.scale - previewState.targetScale) >
+                SCALE_EPSILON ||
                 Math.abs(previewState.velocity) > VELOCITY_EPSILON)
                 moving = true;
 
-            const extent = horizontal ? width : height;
-            const growth = Math.max(0, extent * (previewState.scale - 1));
-            const primaryShift = cumulativeGrowth + growth / 2;
-            geometry.push({
-                preview,
-                width,
-                height,
-                baseX,
-                baseY,
-                scale: previewState.scale,
-                primaryShift,
-            });
-            cumulativeGrowth += growth;
+            const [pivotX, pivotY] = this._pivotForPreview(
+                renderer, i, previews.length);
+            actor.set_pivot_point(pivotX, pivotY);
+            actor.set_scale(previewState.scale, previewState.scale);
+            scaled.push({actor, scale: previewState.scale});
         }
 
-        const [pivotX, pivotY] = this._pivotForPosition(renderer);
-        for (const entry of geometry) {
-            const {preview, width, height, baseX, baseY, scale, primaryShift} = entry;
-            const x = baseX + (horizontal ? primaryShift : 0);
-            const y = baseY + (horizontal ? 0 : primaryShift);
+        // Keep the most magnified preview above neighboring preview artwork.
+        scaled.sort((a, b) => a.scale - b.scale);
+        for (const entry of scaled)
+            entry.actor.raise_top?.();
 
-            preview.actor.set_position(Math.round(x), Math.round(y));
-            preview.actor.set_scale(scale, scale);
+        const boundary = this._trailingBoundaryItem(renderer, state);
+        const lastPreview = previews.at(-1);
+        const guard = computeTrailingOverlapGuard({
+            horizontal,
+            previewRect: transformedRect(lastPreview?.actor),
+            boundaryRect: transformedRect(boundary?.actor),
+            minGap: BOUNDARY_MIN_GAP,
+        });
 
-            // Magnified preview artwork bulges out of the material on the short
-            // axis exactly like app icons. On the Dock's long axis, however, the
-            // tray grows so following items never overlap the preview.
-            const visualX = x + pivotX * width * (1 - scale);
-            const visualY = y + pivotY * height * (1 - scale);
-            const visualWidth = width * scale;
-            const visualHeight = height * scale;
-
-            if (horizontal) {
-                trayMinX = Math.min(trayMinX, visualX);
-                trayMaxX = Math.max(trayMaxX, visualX + visualWidth);
-                trayMinY = Math.min(trayMinY, baseY);
-                trayMaxY = Math.max(trayMaxY, baseY + height);
-            } else {
-                trayMinX = Math.min(trayMinX, baseX);
-                trayMaxX = Math.max(trayMaxX, baseX + width);
-                trayMinY = Math.min(trayMinY, visualY);
-                trayMaxY = Math.max(trayMaxY, visualY + visualHeight);
-            }
-        }
-
-        if (cumulativeGrowth > 0.001 && state.specialIndex >= 0) {
+        if (guard > 0.001 && state.specialIndex >= 0) {
             const items = renderer._orderedItems();
             for (let i = state.specialIndex; i < items.length; i++)
-                this._interactions._shiftPaintedItem(renderer, items[i], cumulativeGrowth);
-        }
-        state.shiftAmount += cumulativeGrowth;
-
-        if (Number.isFinite(trayMinX)) {
-            state.trayBounds = {
-                minX: trayMinX,
-                minY: trayMinY,
-                maxX: trayMaxX,
-                maxY: trayMaxY,
-            };
+                this._interactions._shiftPaintedItem(renderer, items[i], guard);
+            state.shiftAmount += guard;
+            state.boundaryGuard = guard;
+        } else {
+            state.boundaryGuard = 0;
         }
 
         if (active || moving)
             renderer._wake?.();
+    }
+
+    _trailingBoundaryItem(renderer, state) {
+        const items = renderer._orderedItems?.() ?? renderer._items ?? [];
+        if (state.specialIndex >= 0)
+            return items[state.specialIndex] ?? null;
+        return null;
+    }
+
+    _pivotForPreview(renderer, index, count) {
+        const primary = count > 1 ? index / (count - 1) : 0.25;
+        switch (renderer._dock.position) {
+        case St.Side.TOP:
+            return [primary, 0];
+        case St.Side.LEFT:
+            return [0, primary];
+        case St.Side.RIGHT:
+            return [1, primary];
+        case St.Side.BOTTOM:
+        default:
+            return [primary, 1];
+        }
     }
 
     _previewState(preview) {
@@ -319,6 +304,23 @@ export class MacThumbnailFisheye {
             return [0.5, 1];
         }
     }
+}
+
+
+function transformedRect(actor) {
+    if (!actor?.visible)
+        return null;
+
+    try {
+        const [x, y] = actor.get_transformed_position();
+        const [width, height] = actor.get_transformed_size();
+        if ([x, y, width, height].every(Number.isFinite) &&
+            width > 0 && height > 0)
+            return {x, y, width, height};
+    } catch {
+        // Actor may disappear during a window/dock rebuild.
+    }
+    return null;
 }
 
 /**

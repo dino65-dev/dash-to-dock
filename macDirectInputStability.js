@@ -3,9 +3,6 @@
 import {Clutter, St} from './dependencies/gi.js';
 import {Main} from './dependencies/shell/ui.js';
 
-const TRAY_GAP = 5;
-const TRAY_DIVIDER_GAP = 8;
-const TRAY_PADDING = 8;
 const INPUT_PADDING = 10;
 
 /**
@@ -21,8 +18,8 @@ const INPUT_PADDING = 10;
  * This layer removes that feedback loop instead of damping it:
  *  - thumbnails are visual-only actors;
  *  - one stable transparent tray proxy owns thumbnail hover/click input;
- *  - the tray is anchored to untransformed Dash base geometry with enough
- *    reserved room for the preceding icon's maximum magnification;
+ *  - tray layout is owned only by MacDockInteractions; this class never moves
+ *    thumbnails or trailing system items;
  *  - Trash/locations and Show Apps get transparent reactive proxies over their
  *    final compositor rectangles, so native parent clipping is irrelevant;
  *  - the old stage-capture special-item router is bypassed, while normal app
@@ -42,7 +39,6 @@ export class MacDirectInputStability {
         if (!this._interactions || !this._macEffects)
             return;
 
-        this._replaceThumbnailLayout();
         this._wrapPostPaintItems();
 
         this._docksReadyId = this._dockManager?.connect?.(
@@ -62,17 +58,12 @@ export class MacDirectInputStability {
         for (const renderer of [...this._rendererStates.keys()])
             this._unpatchRenderer(renderer);
 
-        if (this._originalPositionThumbnails && this._interactions) {
-            this._interactions._positionThumbnails =
-                this._originalPositionThumbnails;
-        }
         if (this._originalPostPaintItems && this._interactions)
             this._interactions._postPaintItems = this._originalPostPaintItems;
 
         this._rendererStates.clear();
         this._rendererStates = null;
         this._previewBaseRects = new WeakMap();
-        this._originalPositionThumbnails = null;
         this._originalPostPaintItems = null;
         this._settings = null;
         this._dockManager = null;
@@ -80,17 +71,6 @@ export class MacDirectInputStability {
         this._inputIntegrity = null;
         this._thumbnailFisheye = null;
         this._interactions = null;
-    }
-
-    _replaceThumbnailLayout() {
-        const interactions = this._interactions;
-        if (typeof interactions?._positionThumbnails !== 'function')
-            return;
-
-        this._originalPositionThumbnails = interactions._positionThumbnails;
-        interactions._positionThumbnails =
-            (renderer, state, previous, previews) =>
-                this._positionThumbnails(renderer, state, previous, previews);
     }
 
     _wrapPostPaintItems() {
@@ -239,112 +219,61 @@ export class MacDirectInputStability {
         return proxy;
     }
 
-    _positionThumbnails(renderer, interactionState, previous, previews) {
-        const rendererState = this._rendererStates?.get(renderer);
-        const horizontal = renderer?._dock?.isHorizontal;
-        if (!previous?.baseRect || !previews?.length) {
-            interactionState.trayBounds = null;
-            if (rendererState)
-                rendererState.trayInputRect = null;
+    _syncPreviewGeometry(renderer, interactionState, state) {
+        const previews = interactionState?.minimizedWindows
+            ?.map(window => interactionState.thumbnails.get(window))
+            ?.filter(Boolean) ?? [];
+        let maxCrossExtent = 0;
+        let maxPrimaryExtent = 0;
+
+        for (const preview of previews) {
+            this._configurePreview(renderer, preview);
+            const actor = preview?.actor;
+            if (!actor)
+                continue;
+            const [width, height] = actor.get_size?.() ?? [0, 0];
+            if (!(width > 0) || !(height > 0))
+                continue;
+            this._previewBaseRects.set(actor, {
+                x: actor.x,
+                y: actor.y,
+                width,
+                height,
+            });
+            maxCrossExtent = Math.max(maxCrossExtent,
+                renderer._dock.isHorizontal ? height : width);
+            maxPrimaryExtent = Math.max(maxPrimaryExtent,
+                renderer._dock.isHorizontal ? width : height);
+        }
+
+        const bounds = interactionState?.trayBounds;
+        if (!bounds || !previews.length) {
+            state.trayInputRect = null;
             return;
         }
 
         const maxScale = 1 + Math.max(0,
             this._settings?.get_double('macos-magnification') ?? 0);
-        const reserve = Math.max(0,
-            previous.baseSize * (maxScale - 1) / 2);
-
-        // The stable visual gap is real layout space, so trailing native/system
-        // items must receive it too. If Trash/locations exist they were already
-        // shifted by MacDockInteractions; if they do not, v122 will later use
-        // the increased shiftAmount when it makes Show Apps the boundary.
-        if (reserve > 0) {
-            if (interactionState.specialIndex >= 0) {
-                const items = renderer._orderedItems?.() ?? renderer._items ?? [];
-                for (let i = interactionState.specialIndex; i < items.length; i++)
-                    this._interactions._shiftPaintedItem(renderer, items[i], reserve);
-            }
-            interactionState.shiftAmount += reserve;
-        }
-
-        const previousEnd = horizontal
-            ? previous.baseRect.x + previous.baseRect.width
-            : previous.baseRect.y + previous.baseRect.height;
-        let cursor = previousEnd + reserve + TRAY_DIVIDER_GAP + TRAY_PADDING;
-        let minX = Number.POSITIVE_INFINITY;
-        let minY = Number.POSITIVE_INFINITY;
-        let maxX = Number.NEGATIVE_INFINITY;
-        let maxY = Number.NEGATIVE_INFINITY;
-        let primaryExtent = 0;
-        let maxPreviewExtent = 0;
-
-        for (const preview of previews) {
-            const actor = preview?.actor;
-            if (!actor)
-                continue;
-
-            this._configurePreview(renderer, preview);
-            const [width, height] = actor.get_size?.() ?? [0, 0];
-            if (!(width > 0) || !(height > 0))
-                continue;
-
-            let x;
-            let y;
-            if (horizontal) {
-                x = cursor;
-                y = previous.baseCenterY - height / 2;
-                cursor += width + TRAY_GAP;
-                primaryExtent += width;
-                maxPreviewExtent = Math.max(maxPreviewExtent, height);
-            } else {
-                x = previous.baseCenterX - width / 2;
-                y = cursor;
-                cursor += height + TRAY_GAP;
-                primaryExtent += height;
-                maxPreviewExtent = Math.max(maxPreviewExtent, width);
-            }
-
-            actor.set_position(Math.round(x), Math.round(y));
-            actor.show();
-            const rect = {x, y, width, height};
-            this._previewBaseRects.set(actor, rect);
-            minX = Math.min(minX, x);
-            minY = Math.min(minY, y);
-            maxX = Math.max(maxX, x + width);
-            maxY = Math.max(maxY, y + height);
-        }
-
-        if (!Number.isFinite(minX)) {
-            interactionState.trayBounds = null;
-            if (rendererState)
-                rendererState.trayInputRect = null;
-            return;
-        }
-
-        interactionState.trayBounds = {minX, minY, maxX, maxY};
-        if (!rendererState)
-            return;
-
-        const gaps = Math.max(0, previews.length - 1) * TRAY_GAP;
-        primaryExtent += gaps;
-        const growthReserve = Math.max(INPUT_PADDING,
-            primaryExtent * Math.max(0, maxScale - 1) + INPUT_PADDING);
+        const magnification = Math.max(0, maxScale - 1);
         const crossReserve = Math.max(INPUT_PADDING,
-            maxPreviewExtent * Math.max(0, maxScale - 1) / 2 + INPUT_PADDING);
+            maxCrossExtent * magnification + INPUT_PADDING);
+        const trailingReserve = previews.length === 1
+            ? maxPrimaryExtent * magnification + INPUT_PADDING
+            : INPUT_PADDING;
 
-        if (horizontal) {
-            rendererState.trayInputRect = {
-                x: minX - INPUT_PADDING,
-                y: minY - crossReserve,
-                width: maxX - minX + growthReserve + INPUT_PADDING,
-                height: maxY - minY + crossReserve * 2,
+        if (renderer._dock.isHorizontal) {
+            state.trayInputRect = {
+                x: bounds.minX - INPUT_PADDING,
+                y: bounds.minY - crossReserve,
+                width: bounds.maxX - bounds.minX + INPUT_PADDING + trailingReserve,
+                height: bounds.maxY - bounds.minY + crossReserve * 2,
             };
         } else {
-            rendererState.trayInputRect = {
-                x: minX - crossReserve,
-                y: minY - INPUT_PADDING,
-                width: maxX - minX + crossReserve * 2,
-                height: maxY - minY + growthReserve + INPUT_PADDING,
+            state.trayInputRect = {
+                x: bounds.minX - crossReserve,
+                y: bounds.minY - INPUT_PADDING,
+                width: bounds.maxX - bounds.minX + crossReserve * 2,
+                height: bounds.maxY - bounds.minY + INPUT_PADDING + trailingReserve,
             };
         }
     }
@@ -374,6 +303,7 @@ export class MacDirectInputStability {
             return;
 
         this._installCaptureBypass(renderer, state);
+        this._syncPreviewGeometry(renderer, interactionState, state);
         this._syncTrayProxy(renderer, interactionState, state);
         this._syncSpecialProxies(renderer, state);
     }

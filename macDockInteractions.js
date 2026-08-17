@@ -15,11 +15,13 @@ import {
     PopupMenu,
 } from './dependencies/shell/ui.js';
 
+import {
+    computeTrayLayout,
+    TRAY_DIVIDER_GAP,
+} from './macTrayLayout.js';
+
 const MACOS_SCHEMA = 'org.gnome.shell.extensions.dash-to-dock.macos';
 const MATERIAL_MARGIN = 5;
-const TRAY_GAP = 5;
-const TRAY_DIVIDER_GAP = 8;
-const TRAY_PADDING = 8;
 const LAUNCH_TIMEOUT_MS = 20_000;
 const RECENT_RELOAD_DELAY_MS = 180;
 const RECENT_CACHE_LIMIT = 80;
@@ -182,6 +184,7 @@ export class MacDockInteractions {
             trayActive: false,
             specialIndex: -1,
             shiftAmount: 0,
+            boundaryGuard: 0,
             originalPaintItems: renderer._paintItems,
             originalPaintMaterial: renderer._paintMaterial,
         };
@@ -451,6 +454,7 @@ export class MacDockInteractions {
         state.trayBounds = null;
         state.specialIndex = -1;
         state.shiftAmount = 0;
+        state.boundaryGuard = 0;
 
         if (!state.trayActive) {
             for (const preview of state.thumbnails.values())
@@ -460,7 +464,8 @@ export class MacDockInteractions {
 
         const items = renderer._orderedItems();
         const specialIndex = items.findIndex(item =>
-            item.kind === 'app' && (item.app?.location || item.app?.isTrash));
+            item.kind === 'show-apps' ||
+            (item.kind === 'app' && (item.app?.location || item.app?.isTrash)));
         state.specialIndex = specialIndex;
 
         let previous = null;
@@ -478,17 +483,6 @@ export class MacDockInteractions {
         const previews = state.minimizedWindows
             .map(window => state.thumbnails.get(window))
             .filter(Boolean);
-        const totalPreviewExtent = previews.reduce((sum, preview) => {
-            const [width, height] = preview.actor.get_size();
-            return sum + (renderer._dock.isHorizontal ? width : height);
-        }, 0) + Math.max(0, previews.length - 1) * TRAY_GAP;
-        state.shiftAmount = totalPreviewExtent + TRAY_PADDING * 2 + TRAY_DIVIDER_GAP;
-
-        if (specialIndex >= 0) {
-            for (let i = specialIndex; i < items.length; i++)
-                this._shiftPaintedItem(renderer, items[i], state.shiftAmount);
-        }
-
         this._positionThumbnails(renderer, state, previous, previews);
     }
 
@@ -524,40 +518,45 @@ export class MacDockInteractions {
     }
 
     _positionThumbnails(renderer, state, previous, previews) {
-        const horizontal = renderer._dock.isHorizontal;
-        const previousEnd = horizontal
-            ? previous.baseRect.x + previous.offset + previous.baseRect.width
-            : previous.baseRect.y + previous.offset + previous.baseRect.height;
-        let cursor = previousEnd + TRAY_DIVIDER_GAP + TRAY_PADDING;
-        let minX = Number.POSITIVE_INFINITY;
-        let minY = Number.POSITIVE_INFINITY;
-        let maxX = Number.NEGATIVE_INFINITY;
-        let maxY = Number.NEGATIVE_INFINITY;
-
-        for (const preview of previews) {
+        const items = renderer._orderedItems();
+        const boundary = state.specialIndex >= 0
+            ? items[state.specialIndex] ?? null
+            : null;
+        const previewSizes = previews.map(preview => {
             const [width, height] = preview.actor.get_size();
-            let x;
-            let y;
-            if (horizontal) {
-                x = cursor;
-                y = previous.baseCenterY - height / 2;
-                cursor += width + TRAY_GAP;
-            } else {
-                x = previous.baseCenterX - width / 2;
-                y = cursor;
-                cursor += height + TRAY_GAP;
-            }
+            return {width, height};
+        });
+        const layout = computeTrayLayout({
+            horizontal: renderer._dock.isHorizontal,
+            previousRect: previous.baseRect,
+            previousCenterX: previous.baseCenterX,
+            previousCenterY: previous.baseCenterY,
+            previewSizes,
+            boundaryRect: boundary?.baseRect ?? null,
+        });
 
-            preview.actor.set_position(Math.round(x), Math.round(y));
-            preview.actor.show();
-            minX = Math.min(minX, x);
-            minY = Math.min(minY, y);
-            maxX = Math.max(maxX, x + width);
-            maxY = Math.max(maxY, y + height);
+        if (!layout) {
+            state.trayBounds = null;
+            return;
         }
 
-        if (Number.isFinite(minX))
-            state.trayBounds = {minX, minY, maxX, maxY};
+        for (let i = 0; i < previews.length; i++) {
+            const preview = previews[i];
+            const rect = layout.previewRects[i];
+            if (!rect)
+                continue;
+            preview.actor.set_position(Math.round(rect.x), Math.round(rect.y));
+            preview.actor.show();
+        }
+
+        state.trayBounds = layout.trayBounds;
+        state.shiftAmount = layout.boundaryShift;
+        if (state.specialIndex >= 0 && Math.abs(state.shiftAmount) > 0.001) {
+            for (let i = state.specialIndex; i < items.length; i++) {
+                this._shiftPaintedItem(
+                    renderer, items[i], state.shiftAmount);
+            }
+        }
     }
 
     _postPaintMaterial(renderer, state) {
@@ -622,14 +621,14 @@ export class MacDockInteractions {
             return;
 
         if (renderer._dock.isHorizontal) {
-            const previousEnd = previous.baseRect.x + previous.offset + previous.baseRect.width;
+            const previousEnd = previous.baseRect.x + previous.baseRect.width;
             const x = previousEnd + TRAY_DIVIDER_GAP / 2;
             const height = Math.max(18, Math.min(rect.height * 0.62, previous.baseSize * 0.78));
             renderer._divider.set_position(
                 Math.round(x), Math.round(rect.y + (rect.height - height) / 2));
             renderer._divider.set_size(1, Math.round(height));
         } else {
-            const previousEnd = previous.baseRect.y + previous.offset + previous.baseRect.height;
+            const previousEnd = previous.baseRect.y + previous.baseRect.height;
             const y = previousEnd + TRAY_DIVIDER_GAP / 2;
             const width = Math.max(18, Math.min(rect.width * 0.62, previous.baseSize * 0.78));
             renderer._divider.set_position(
