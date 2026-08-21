@@ -4,17 +4,14 @@ import {Clutter, GLib, St} from './dependencies/gi.js';
 
 const FALLBACK_LONG_PRESS_MS = 600;
 const FALLBACK_DRAG_THRESHOLD = 10;
-const LAYOUT_SHIFT_EPSILON = 0.01;
 
 /**
  * Keeps the detached macOS presentation and Dash-to-Dock's native interaction
  * model in sync.
  *
- * v122 treats the tray displacement as part of an item's effective geometry
- * everywhere input decisions are made. Native actors remain authoritative for
- * normal app tiles. Trash/locations and Show Apps are routed from their final
- * compositor rectangles because the thumbnail tray can move them outside the
- * native parent allocation.
+ * Native actors remain authoritative for normal app tiles. Trash/locations and
+ * Show Apps are routed from their final compositor rectangles because the
+ * unified tray layout can place them outside the native parent allocation.
  */
 export class MacInputIntegrity {
     constructor(interactions, thumbnailFisheye = null) {
@@ -29,7 +26,6 @@ export class MacInputIntegrity {
         if (!this._interactions || !this._macEffects)
             return;
 
-        this._wrapPostPaintItems();
         this._wrapDndHighlights();
 
         this._docksReadyId = this._dockManager?.connect?.(
@@ -51,8 +47,6 @@ export class MacInputIntegrity {
         for (const renderer of [...this._rendererStates.keys()])
             this._unpatchRenderer(renderer);
 
-        if (this._originalPostPaintItems && this._interactions)
-            this._interactions._postPaintItems = this._originalPostPaintItems;
         if (this._originalApplyDndHighlights && this._interactions) {
             this._interactions._applyDndHighlights =
                 this._originalApplyDndHighlights;
@@ -60,7 +54,6 @@ export class MacInputIntegrity {
 
         this._rendererStates.clear();
         this._rendererStates = null;
-        this._originalPostPaintItems = null;
         this._originalApplyDndHighlights = null;
         this._settings = null;
         this._dockManager = null;
@@ -92,26 +85,12 @@ export class MacInputIntegrity {
 
         const state = {
             originalCapturedEvent,
-            originalPointerInActivationZone: renderer._pointerInActivationZone,
-            originalUpdateTargets: renderer._updateTargets,
             hoveredSpecialActor: null,
         };
         this._rendererStates.set(renderer, state);
 
         renderer._onCapturedEvent = event =>
             this._routeCapturedEvent(renderer, state, event);
-
-        if (typeof state.originalPointerInActivationZone === 'function') {
-            renderer._pointerInActivationZone = (x, y) =>
-                this._withEffectiveBaseCenters(renderer, () =>
-                    state.originalPointerInActivationZone.call(renderer, x, y));
-        }
-
-        if (typeof state.originalUpdateTargets === 'function') {
-            renderer._updateTargets = (x, y, active) =>
-                this._withEffectiveBaseCenters(renderer, () =>
-                    state.originalUpdateTargets.call(renderer, x, y, active));
-        }
     }
 
     _unpatchRenderer(renderer) {
@@ -126,12 +105,6 @@ export class MacInputIntegrity {
 
         try {
             renderer._onCapturedEvent = state.originalCapturedEvent;
-            if (typeof state.originalPointerInActivationZone === 'function') {
-                renderer._pointerInActivationZone =
-                    state.originalPointerInActivationZone;
-            }
-            if (typeof state.originalUpdateTargets === 'function')
-                renderer._updateTargets = state.originalUpdateTargets;
         } catch {
             // Renderer may already be destroyed during a dock rebuild.
         }
@@ -416,76 +389,6 @@ export class MacInputIntegrity {
             }
         }
         return false;
-    }
-
-    _withEffectiveBaseCenters(renderer, callback) {
-        const interactionState =
-            this._interactions?._rendererStates?.get?.(renderer);
-        if (!interactionState?.trayActive)
-            return callback();
-
-        const horizontal = renderer?._dock?.isHorizontal;
-        const saved = [];
-
-        for (const item of renderer?._items ?? []) {
-            const shift = this._trayLayoutShift(renderer, item);
-            if (!Number.isFinite(shift) ||
-                Math.abs(shift) <= LAYOUT_SHIFT_EPSILON)
-                continue;
-
-            saved.push([item, item.baseCenterX, item.baseCenterY]);
-            if (horizontal)
-                item.baseCenterX += shift;
-            else
-                item.baseCenterY += shift;
-        }
-
-        try {
-            return callback();
-        } finally {
-            for (const [item, x, y] of saved) {
-                item.baseCenterX = x;
-                item.baseCenterY = y;
-            }
-        }
-    }
-
-    _trayLayoutShift(renderer, item) {
-        const actor = item?.item;
-        if (!actor)
-            return 0;
-
-        const horizontal = renderer?._dock?.isHorizontal;
-        const translation = horizontal
-            ? actor.translationX
-            : actor.translationY;
-        const fishEyeOffset = item.offset ?? 0;
-        const shift = (translation ?? 0) - fishEyeOffset;
-        return Number.isFinite(shift) ? shift : 0;
-    }
-
-    _wrapPostPaintItems() {
-        const interactions = this._interactions;
-        this._originalPostPaintItems = interactions._postPaintItems;
-        interactions._postPaintItems = (renderer, state) => {
-            this._originalPostPaintItems.call(interactions, renderer, state);
-            this._ensureTrailingSystemBoundary(renderer, state);
-        };
-    }
-
-    _ensureTrailingSystemBoundary(renderer, state) {
-        if (!state?.trayActive || state.specialIndex >= 0 ||
-            !(state.shiftAmount > 0))
-            return;
-
-        const items = renderer._orderedItems?.() ?? renderer._items ?? [];
-        const showAppsIndex = items.findIndex(item => item.kind === 'show-apps');
-        if (showAppsIndex < 0)
-            return;
-
-        state.specialIndex = showAppsIndex;
-        for (let i = showAppsIndex; i < items.length; i++)
-            this._interactions._shiftPaintedItem(renderer, items[i], state.shiftAmount);
     }
 
     _wrapDndHighlights() {

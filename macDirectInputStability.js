@@ -223,8 +223,10 @@ export class MacDirectInputStability {
         const previews = interactionState?.minimizedWindows
             ?.map(window => interactionState.thumbnails.get(window))
             ?.filter(Boolean) ?? [];
-        let maxCrossExtent = 0;
-        let maxPrimaryExtent = 0;
+        let minX = Number.POSITIVE_INFINITY;
+        let minY = Number.POSITIVE_INFINITY;
+        let maxX = Number.NEGATIVE_INFINITY;
+        let maxY = Number.NEGATIVE_INFINITY;
 
         for (const preview of previews) {
             this._configurePreview(renderer, preview);
@@ -234,48 +236,39 @@ export class MacDirectInputStability {
             const [width, height] = actor.get_size?.() ?? [0, 0];
             if (!(width > 0) || !(height > 0))
                 continue;
-            this._previewBaseRects.set(actor, {
-                x: actor.x,
-                y: actor.y,
-                width,
-                height,
-            });
-            maxCrossExtent = Math.max(maxCrossExtent,
-                renderer._dock.isHorizontal ? height : width);
-            maxPrimaryExtent = Math.max(maxPrimaryExtent,
-                renderer._dock.isHorizontal ? width : height);
+            const baseRect = preview.effectItem?.baseRect;
+            const stableRect = baseRect
+                ? {...baseRect}
+                : {x: actor.x, y: actor.y, width, height};
+            this._previewBaseRects.set(actor, stableRect);
+
+            // Keep both geometries inside one non-visual proxy. The stable
+            // rectangle prevents hover collapse while the spring returns; the
+            // transformed rectangle keeps magnified/fanned-out previews fully
+            // clickable. Neither rectangle is used by the layout solver.
+            for (const rect of [stableRect, transformedRect(actor)]) {
+                if (!rect)
+                    continue;
+                minX = Math.min(minX, rect.x);
+                minY = Math.min(minY, rect.y);
+                maxX = Math.max(maxX, rect.x + rect.width);
+                maxY = Math.max(maxY, rect.y + rect.height);
+            }
         }
 
-        const bounds = interactionState?.trayBounds;
-        if (!bounds || !previews.length) {
+        if (!previews.length || !Number.isFinite(minX) ||
+            !Number.isFinite(minY) || !Number.isFinite(maxX) ||
+            !Number.isFinite(maxY)) {
             state.trayInputRect = null;
             return;
         }
 
-        const maxScale = 1 + Math.max(0,
-            this._settings?.get_double('macos-magnification') ?? 0);
-        const magnification = Math.max(0, maxScale - 1);
-        const crossReserve = Math.max(INPUT_PADDING,
-            maxCrossExtent * magnification + INPUT_PADDING);
-        const trailingReserve = previews.length === 1
-            ? maxPrimaryExtent * magnification + INPUT_PADDING
-            : INPUT_PADDING;
-
-        if (renderer._dock.isHorizontal) {
-            state.trayInputRect = {
-                x: bounds.minX - INPUT_PADDING,
-                y: bounds.minY - crossReserve,
-                width: bounds.maxX - bounds.minX + INPUT_PADDING + trailingReserve,
-                height: bounds.maxY - bounds.minY + crossReserve * 2,
-            };
-        } else {
-            state.trayInputRect = {
-                x: bounds.minX - crossReserve,
-                y: bounds.minY - INPUT_PADDING,
-                width: bounds.maxX - bounds.minX + crossReserve * 2,
-                height: bounds.maxY - bounds.minY + INPUT_PADDING + trailingReserve,
-            };
-        }
+        state.trayInputRect = {
+            x: minX - INPUT_PADDING,
+            y: minY - INPUT_PADDING,
+            width: maxX - minX + INPUT_PADDING * 2,
+            height: maxY - minY + INPUT_PADDING * 2,
+        };
     }
 
     _configureExistingPreviews(renderer) {

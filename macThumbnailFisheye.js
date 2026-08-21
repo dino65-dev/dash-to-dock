@@ -91,12 +91,25 @@ export class MacThumbnailFisheye extends MacThumbnailFisheyeBase {
         }
 
         renderer._layer.add_child(actor);
-        const preview = {actor, clone, window};
-        this._previewStates.set(preview, {
+        const effectItem = {
+            kind: 'thumbnail',
+            actor,
+            baseSize: Math.max(width + 2, height + 2),
+            effectExtent: width + 2,
             scale: 1,
-            velocity: 0,
+            scaleVelocity: 0,
             targetScale: 1,
-        });
+            offset: 0,
+            offsetVelocity: 0,
+            targetOffset: 0,
+            layoutShift: 0,
+            baseCenterX: 0,
+            baseCenterY: 0,
+            baseRect: null,
+        };
+        const preview = {actor, clone, window, effectItem};
+        effectItem.preview = preview;
+        this._previewStates.set(preview, effectItem);
         return preview;
     }
 
@@ -120,8 +133,11 @@ export class MacThumbnailFisheye extends MacThumbnailFisheyeBase {
                 const previewState = this._previewStates.get(preview);
                 if (previewState) {
                     previewState.scale = 1;
-                    previewState.velocity = 0;
+                    previewState.scaleVelocity = 0;
                     previewState.targetScale = 1;
+                    previewState.offset = 0;
+                    previewState.offsetVelocity = 0;
+                    previewState.targetOffset = 0;
                 }
             }
             return;

@@ -15,13 +15,9 @@ import {
     PopupMenu,
 } from './dependencies/shell/ui.js';
 
-import {
-    computeTrayLayout,
-    TRAY_DIVIDER_GAP,
-} from './macTrayLayout.js';
+import {computeTrayLayout} from './macTrayLayout.js';
 
 const MACOS_SCHEMA = 'org.gnome.shell.extensions.dash-to-dock.macos';
-const MATERIAL_MARGIN = 5;
 const LAUNCH_TIMEOUT_MS = 20_000;
 const RECENT_RELOAD_DELAY_MS = 180;
 const RECENT_CACHE_LIMIT = 80;
@@ -48,8 +44,6 @@ export class MacDockInteractions {
 
         this._docksReadyId = dockManager.connect('docks-ready', () => this._syncAll());
         this._settingsChangedId = this._settings.connect('changed', () => {
-            for (const state of this._rendererStates.values())
-                state.baseMaterialRect = null;
             this._syncAll();
             this._ensureAnimation();
         });
@@ -179,15 +173,23 @@ export class MacDockInteractions {
             thumbnails: new Map(),
             minimizedWindows: [],
             halo: new St.Widget({reactive: false, visible: false}),
-            baseMaterialRect: null,
             trayBounds: null,
             trayActive: false,
             specialIndex: -1,
             shiftAmount: 0,
-            boundaryGuard: 0,
+            layout: null,
+            previousItem: null,
+            trailingItems: [],
+            effectItems: [],
+            originalEffectLayoutProvider: renderer._effectLayoutProvider,
+            effectLayoutProvider: null,
             originalPaintItems: renderer._paintItems,
             originalPaintMaterial: renderer._paintMaterial,
         };
+
+        state.effectLayoutProvider = () =>
+            this._prepareEffectLayout(renderer, state);
+        renderer._effectLayoutProvider = state.effectLayoutProvider;
 
         state.halo.set_style(
             'background-color: rgba(255, 255, 255, 0.10); ' +
@@ -200,10 +202,7 @@ export class MacDockInteractions {
             this._postPaintItems(renderer, state);
         };
         renderer._paintMaterial = (...args) => {
-            if (state.baseMaterialRect)
-                renderer._materialRect = state.baseMaterialRect;
             state.originalPaintMaterial.apply(renderer, args);
-            state.baseMaterialRect = renderer._materialRect;
             this._postPaintMaterial(renderer, state);
         };
 
@@ -224,9 +223,14 @@ export class MacDockInteractions {
         try {
             renderer._paintItems = state.originalPaintItems;
             renderer._paintMaterial = state.originalPaintMaterial;
+            if (renderer._effectLayoutProvider === state.effectLayoutProvider) {
+                renderer._effectLayoutProvider =
+                    state.originalEffectLayoutProvider ?? null;
+            }
             for (const item of renderer._items ?? []) {
                 item.actor.opacity = 255;
                 item.actor.translationY = 0;
+                item.layoutShift = 0;
                 if (item.reflection)
                     item.reflection.translationY = 0;
             }
@@ -386,7 +390,6 @@ export class MacDockInteractions {
                 state.thumbnails.set(window, preview);
         }
 
-        state.baseMaterialRect = null;
         renderer._materialRect = null;
         renderer._wake?.();
     }
@@ -430,17 +433,98 @@ export class MacDockInteractions {
                 // Window may have closed between click and activation.
             }
         });
-        actor.connect('notify::hover', () => {
-            actor.ease({
-                scale_x: actor.hover ? 1.08 : 1,
-                scale_y: actor.hover ? 1.08 : 1,
-                duration: 120,
-                mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-            });
-        });
-
         renderer._layer.add_child(actor);
         return {actor, clone, window};
+    }
+
+    _prepareEffectLayout(renderer, state) {
+        for (const item of renderer._items ?? [])
+            item.layoutShift = 0;
+
+        state.trayActive = this._settings.get_boolean('macos-minimized-thumbnails') &&
+            state.thumbnails.size > 0;
+        state.trayBounds = null;
+        state.specialIndex = -1;
+        state.shiftAmount = 0;
+        state.layout = null;
+        state.previousItem = null;
+        state.trailingItems = [];
+        state.effectItems = [];
+
+        if (!state.trayActive || !this._sourcesMatch(renderer, state)) {
+            for (const preview of state.thumbnails.values())
+                this._resetPreviewEffect(preview);
+            return null;
+        }
+
+        const horizontal = renderer._dock.isHorizontal;
+        const items = renderer._orderedItems();
+        const normalItems = items.filter(item =>
+            item.kind === 'app' && !item.app?.location && !item.app?.isTrash);
+        const previous = normalItems.at(-1);
+        if (!previous?.baseRect)
+            return null;
+
+        const previousCenter = horizontal
+            ? previous.baseCenterX
+            : previous.baseCenterY;
+        const trailingItems = items.filter(item => {
+            if (!this._isSystemItem(item))
+                return false;
+            const center = horizontal ? item.baseCenterX : item.baseCenterY;
+            return Number.isFinite(center) && center > previousCenter;
+        });
+        const boundary = trailingItems[0] ?? null;
+        const previews = state.minimizedWindows
+            .map(window => state.thumbnails.get(window))
+            .filter(Boolean);
+        const previewSizes = previews.map(preview => {
+            const [width, height] = preview.actor.get_size();
+            return {width, height};
+        });
+        const layout = computeTrayLayout({
+            horizontal,
+            previousRect: previous.baseRect,
+            previousCenterX: previous.baseCenterX,
+            previousCenterY: previous.baseCenterY,
+            previewSizes,
+            boundaryRect: boundary?.baseRect ?? null,
+        });
+        if (!layout)
+            return null;
+
+        const previewItems = [];
+        for (let i = 0; i < previews.length; i++) {
+            const rect = layout.previewRects[i];
+            if (!rect)
+                continue;
+
+            const effectItem = this._previewEffectItem(previews[i]);
+            effectItem.baseRect = rect;
+            effectItem.baseCenterX = rect.x + rect.width / 2;
+            effectItem.baseCenterY = rect.y + rect.height / 2;
+            effectItem.baseSize = Math.max(rect.width, rect.height);
+            effectItem.effectExtent = horizontal ? rect.width : rect.height;
+            effectItem.layoutShift = 0;
+            previewItems.push(effectItem);
+        }
+
+        for (const item of trailingItems)
+            item.layoutShift = layout.boundaryShift;
+
+        state.trayBounds = layout.trayBounds;
+        state.specialIndex = boundary ? items.indexOf(boundary) : -1;
+        state.shiftAmount = layout.boundaryShift;
+        state.layout = layout;
+        state.previousItem = previous;
+        state.trailingItems = trailingItems;
+        const rendererItems = renderer._items ?? [];
+        state.effectItems = [...rendererItems, ...previewItems];
+
+        return {
+            items: state.effectItems,
+            coupledOffsets: true,
+        };
     }
 
     _postPaintItems(renderer, state) {
@@ -449,41 +533,16 @@ export class MacDockInteractions {
             return;
         }
 
-        state.trayActive = this._settings.get_boolean('macos-minimized-thumbnails') &&
-            state.thumbnails.size > 0;
-        state.trayBounds = null;
-        state.specialIndex = -1;
-        state.shiftAmount = 0;
-        state.boundaryGuard = 0;
-
-        if (!state.trayActive) {
+        if (!state.trayActive || !state.layout) {
             for (const preview of state.thumbnails.values())
                 preview.actor.hide();
             return;
         }
 
-        const items = renderer._orderedItems();
-        const specialIndex = items.findIndex(item =>
-            item.kind === 'show-apps' ||
-            (item.kind === 'app' && (item.app?.location || item.app?.isTrash)));
-        state.specialIndex = specialIndex;
-
-        let previous = null;
-        const previousSearchEnd = specialIndex >= 0 ? specialIndex : items.length;
-        for (let i = previousSearchEnd - 1; i >= 0; i--) {
-            const item = items[i];
-            if (item.kind === 'app' && !item.app?.location && !item.app?.isTrash) {
-                previous = item;
-                break;
-            }
-        }
-        if (!previous?.baseRect)
-            return;
-
         const previews = state.minimizedWindows
             .map(window => state.thumbnails.get(window))
             .filter(Boolean);
-        this._positionThumbnails(renderer, state, previous, previews);
+        this._positionThumbnails(renderer, previews);
     }
 
     _sourcesMatch(renderer, state) {
@@ -492,144 +551,100 @@ export class MacDockInteractions {
             items.every((item, index) => item.source === state.sources[index]);
     }
 
-    _shiftPaintedItem(renderer, item, amount) {
-        if (!amount)
-            return;
+    _positionThumbnails(renderer, previews) {
+        const horizontal = renderer._dock.isHorizontal;
+        for (const preview of previews) {
+            const {effectItem} = preview;
+            const rect = effectItem?.baseRect;
+            if (!rect)
+                continue;
 
-        if (renderer._dock.isHorizontal) {
-            item.actor.x += amount;
-            if (item.reflection)
-                item.reflection.x += amount;
-            if (item.dot)
-                item.dot.x += amount;
-            item.item.translationX += amount;
-            if (item.visualRect)
-                item.visualRect.x += amount;
-        } else {
-            item.actor.y += amount;
-            if (item.reflection)
-                item.reflection.y += amount;
-            if (item.dot)
-                item.dot.y += amount;
-            item.item.translationY += amount;
-            if (item.visualRect)
-                item.visualRect.y += amount;
+            const offset = effectItem.offset ?? 0;
+            const x = rect.x + (horizontal ? offset : 0);
+            const y = rect.y + (horizontal ? 0 : offset);
+            preview.actor.set_position(Math.round(x), Math.round(y));
+            preview.actor.show();
         }
     }
 
-    _positionThumbnails(renderer, state, previous, previews) {
-        const items = renderer._orderedItems();
-        const boundary = state.specialIndex >= 0
-            ? items[state.specialIndex] ?? null
-            : null;
-        const previewSizes = previews.map(preview => {
-            const [width, height] = preview.actor.get_size();
-            return {width, height};
-        });
-        const layout = computeTrayLayout({
-            horizontal: renderer._dock.isHorizontal,
-            previousRect: previous.baseRect,
-            previousCenterX: previous.baseCenterX,
-            previousCenterY: previous.baseCenterY,
-            previewSizes,
-            boundaryRect: boundary?.baseRect ?? null,
-        });
+    _previewEffectItem(preview) {
+        preview.effectItem ??= {
+            kind: 'thumbnail',
+            preview,
+            actor: preview.actor,
+            baseSize: 1,
+            effectExtent: 1,
+            scale: 1,
+            scaleVelocity: 0,
+            targetScale: 1,
+            offset: 0,
+            offsetVelocity: 0,
+            targetOffset: 0,
+            layoutShift: 0,
+            baseCenterX: 0,
+            baseCenterY: 0,
+            baseRect: null,
+        };
+        return preview.effectItem;
+    }
 
-        if (!layout) {
-            state.trayBounds = null;
+    _resetPreviewEffect(preview) {
+        const effectItem = preview?.effectItem;
+        if (!effectItem)
             return;
-        }
+        effectItem.scale = 1;
+        effectItem.scaleVelocity = 0;
+        effectItem.targetScale = 1;
+        effectItem.offset = 0;
+        effectItem.offsetVelocity = 0;
+        effectItem.targetOffset = 0;
+        effectItem.baseRect = null;
+    }
 
-        for (let i = 0; i < previews.length; i++) {
-            const preview = previews[i];
-            const rect = layout.previewRects[i];
-            if (!rect)
-                continue;
-            preview.actor.set_position(Math.round(rect.x), Math.round(rect.y));
-            preview.actor.show();
-        }
-
-        state.trayBounds = layout.trayBounds;
-        state.shiftAmount = layout.boundaryShift;
-        if (state.specialIndex >= 0 && Math.abs(state.shiftAmount) > 0.001) {
-            for (let i = state.specialIndex; i < items.length; i++) {
-                this._shiftPaintedItem(
-                    renderer, items[i], state.shiftAmount);
-            }
-        }
+    _isSystemItem(item) {
+        return item?.kind === 'show-apps' ||
+            (item?.kind === 'app' &&
+             (item.app?.location || item.app?.isTrash));
     }
 
     _postPaintMaterial(renderer, state) {
         if (!state.trayActive || !state.trayBounds || renderer._isDockFullyHidden())
             return;
 
-        const horizontal = renderer._dock.isHorizontal;
-        const items = renderer._orderedItems();
-        let minX = Number.POSITIVE_INFINITY;
-        let minY = Number.POSITIVE_INFINITY;
-        let maxX = Number.NEGATIVE_INFINITY;
-        let maxY = Number.NEGATIVE_INFINITY;
-
-        for (let i = 0; i < items.length; i++) {
-            const item = items[i];
-            if (!item.baseRect)
-                continue;
-            const shifted = state.specialIndex >= 0 && i >= state.specialIndex
-                ? state.shiftAmount : 0;
-            const x = item.baseRect.x + (horizontal ? item.offset + shifted : 0);
-            const y = item.baseRect.y + (horizontal ? 0 : item.offset + shifted);
-            minX = Math.min(minX, x);
-            minY = Math.min(minY, y);
-            maxX = Math.max(maxX, x + item.baseRect.width);
-            maxY = Math.max(maxY, y + item.baseRect.height);
-        }
-
-        minX = Math.min(minX, state.trayBounds.minX);
-        minY = Math.min(minY, state.trayBounds.minY);
-        maxX = Math.max(maxX, state.trayBounds.maxX);
-        maxY = Math.max(maxY, state.trayBounds.maxY);
-
-        const rect = {
-            x: Math.round(minX - MATERIAL_MARGIN),
-            y: Math.round(minY - MATERIAL_MARGIN),
-            width: Math.max(1, Math.round(maxX - minX + MATERIAL_MARGIN * 2)),
-            height: Math.max(1, Math.round(maxY - minY + MATERIAL_MARGIN * 2)),
-        };
-        renderer._material.set_position(rect.x, rect.y);
-        renderer._material.set_size(rect.width, rect.height);
-        renderer._layoutBlurCore(rect);
-        renderer._materialRect = rect;
-
-        this._positionTrayDivider(renderer, state, rect);
+        if (renderer._materialRect)
+            this._positionTrayDivider(renderer, state, renderer._materialRect);
     }
 
     _positionTrayDivider(renderer, state, rect) {
         if (!renderer._divider || !this._settings.get_boolean('macos-divider'))
             return;
 
-        const items = renderer._orderedItems();
-        const searchEnd = state.specialIndex >= 0 ? state.specialIndex : items.length;
-        let previous = null;
-        for (let i = searchEnd - 1; i >= 0; i--) {
-            const item = items[i];
-            if (item.kind === 'app' && !item.app?.location && !item.app?.isTrash) {
-                previous = item;
-                break;
-            }
-        }
-        if (!previous?.baseRect)
+        const previous = state.previousItem;
+        const firstPreview = state.minimizedWindows
+            .map(window => state.thumbnails.get(window))
+            .find(preview => preview?.effectItem?.baseRect);
+        const previewItem = firstPreview?.effectItem;
+        if (!previous?.baseRect || !previewItem?.baseRect)
             return;
 
         if (renderer._dock.isHorizontal) {
-            const previousEnd = previous.baseRect.x + previous.baseRect.width;
-            const x = previousEnd + TRAY_DIVIDER_GAP / 2;
+            const previousEnd = previous.baseRect.x +
+                (previous.layoutShift ?? 0) + (previous.offset ?? 0) +
+                previous.baseRect.width;
+            const previewStart = previewItem.baseRect.x +
+                (previewItem.offset ?? 0);
+            const x = (previousEnd + previewStart) / 2;
             const height = Math.max(18, Math.min(rect.height * 0.62, previous.baseSize * 0.78));
             renderer._divider.set_position(
                 Math.round(x), Math.round(rect.y + (rect.height - height) / 2));
             renderer._divider.set_size(1, Math.round(height));
         } else {
-            const previousEnd = previous.baseRect.y + previous.baseRect.height;
-            const y = previousEnd + TRAY_DIVIDER_GAP / 2;
+            const previousEnd = previous.baseRect.y +
+                (previous.layoutShift ?? 0) + (previous.offset ?? 0) +
+                previous.baseRect.height;
+            const previewStart = previewItem.baseRect.y +
+                (previewItem.offset ?? 0);
+            const y = (previousEnd + previewStart) / 2;
             const width = Math.max(18, Math.min(rect.width * 0.62, previous.baseSize * 0.78));
             renderer._divider.set_position(
                 Math.round(rect.x + (rect.width - width) / 2), Math.round(y));
@@ -867,7 +882,7 @@ export class MacDockInteractions {
         if (existing.some(item => item._macQuickMenu))
             return;
 
-        const app = source.app;
+        const {app} = source;
         const windows = source.getInterestingWindows?.() ?? app?.get_windows?.() ?? [];
         const insertion = Math.max(1,
             existing.indexOf(menu._quitMenuItem) >= 0
@@ -979,8 +994,7 @@ export class MacDockInteractions {
         const bookmarkPattern = /<bookmark\b([^>]*)>([\s\S]*?)<\/bookmark>/g;
         let match;
         while ((match = bookmarkPattern.exec(xml)) && entries.length < RECENT_CACHE_LIMIT) {
-            const attrs = match[1];
-            const body = match[2];
+            const [, attrs, body] = match;
             const href = /\bhref="([^"]+)"/.exec(attrs)?.[1];
             if (!href)
                 continue;

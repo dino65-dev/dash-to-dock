@@ -9,6 +9,11 @@ import {
 
 import {Main} from './dependencies/shell/ui.js';
 
+import {
+    computeBalancedOffsets,
+    computeMagnificationTargets,
+} from './macTrayLayout.js';
+
 const MACOS_SCHEMA = 'org.gnome.shell.extensions.dash-to-dock.macos';
 const MIN_TEXTURE_SIZE = 96;
 const MAX_TEXTURE_SIZE = 256;
@@ -101,6 +106,9 @@ class MacDockRenderer {
         this._dock = dock;
         this._settings = settings;
         this._items = [];
+        this._effectLayoutProvider = null;
+        this._frameEffectItems = [];
+        this._coupleFrameOffsets = false;
         this._connections = [];
         this._needsSync = true;
         this._needsTextureRebuild = true;
@@ -346,6 +354,7 @@ class MacDockRenderer {
         }
 
         this._updateBaseGeometry();
+        this._prepareEffectLayout();
 
         let dt = timeline.get_delta() / 1000;
         if (!Number.isFinite(dt) || dt <= 0)
@@ -496,6 +505,7 @@ class MacDockRenderer {
             offset: 0,
             offsetVelocity: 0,
             targetOffset: 0,
+            layoutShift: 0,
             baseCenterX: 0,
             baseCenterY: 0,
             baseRect: null,
@@ -562,6 +572,7 @@ class MacDockRenderer {
             item.source.set_pivot_point(0.5, 0.5);
             item.item.translationX = item.originalItemTranslationX ?? 0;
             item.item.translationY = item.originalItemTranslationY ?? 0;
+            item.layoutShift = 0;
         } catch {
             // Item may have been destroyed by a Dash redisplay.
         }
@@ -649,6 +660,52 @@ class MacDockRenderer {
             : a.baseCenterY - b.baseCenterY);
     }
 
+    _prepareEffectLayout() {
+        this._frameEffectItems = this._items;
+        this._coupleFrameOffsets = false;
+
+        if (typeof this._effectLayoutProvider !== 'function')
+            return;
+
+        try {
+            const layout = this._effectLayoutProvider();
+            if (!layout?.items?.length)
+                return;
+
+            this._frameEffectItems = layout.items;
+            this._coupleFrameOffsets = !!layout.coupledOffsets;
+        } catch (error) {
+            console.error(`[macOS Dock] Failed unified effect layout: ${error}`);
+            this._frameEffectItems = this._items;
+            this._coupleFrameOffsets = false;
+        }
+    }
+
+    _orderedEffectItems() {
+        const horizontal = this._dock.isHorizontal;
+        const items = this._frameEffectItems?.length
+            ? this._frameEffectItems
+            : this._items;
+        return [...items].sort((a, b) => this._effectCenter(a, horizontal) -
+            this._effectCenter(b, horizontal));
+    }
+
+    _effectCenter(item, horizontal = this._dock.isHorizontal) {
+        const base = horizontal ? item?.baseCenterX : item?.baseCenterY;
+        const shift = item?.layoutShift ?? 0;
+        return (Number.isFinite(base) ? base : 0) +
+            (Number.isFinite(shift) ? shift : 0);
+    }
+
+    _effectExtent(item, horizontal = this._dock.isHorizontal) {
+        if (Number.isFinite(item?.effectExtent))
+            return Math.max(0, item.effectExtent);
+        if (Number.isFinite(item?.baseSize))
+            return Math.max(0, item.baseSize);
+        const extent = horizontal ? item?.baseRect?.width : item?.baseRect?.height;
+        return Number.isFinite(extent) ? Math.max(0, extent) : 0;
+    }
+
     _isDockTransitioning() {
         const state = this._dock?.getDockState?.();
         // docking.js: SHOWING = 1, HIDING = 3.
@@ -668,7 +725,7 @@ class MacDockRenderer {
         if (!this._items.length || this._isDockFullyHidden())
             return false;
 
-        const orderedItems = this._orderedItems();
+        const orderedItems = this._orderedEffectItems();
         const [first] = orderedItems;
         const last = orderedItems.at(-1);
         const horizontal = this._dock.isHorizontal;
@@ -676,13 +733,19 @@ class MacDockRenderer {
             1 + Math.max(0, this._settings.get_double('macos-magnification'));
         const radius =
             Math.max(32, this._settings.get_double('macos-magnification-radius'));
-        const baseSize = Math.max(...orderedItems.map(item => item.baseSize));
+        const baseSize = Math.max(...orderedItems.map(item =>
+            Math.max(this._effectExtent(item, horizontal),
+                horizontal
+                    ? item?.baseRect?.height ?? 0
+                    : item?.baseRect?.width ?? 0)));
         const inwardReach = baseSize * maxScale * 0.62 + 16;
         const outwardReach = baseSize * 0.65 + 16;
+        const firstCenter = this._effectCenter(first, horizontal);
+        const lastCenter = this._effectCenter(last, horizontal);
 
         if (horizontal) {
-            if (pointerX < first.baseCenterX - radius ||
-                pointerX > last.baseCenterX + radius)
+            if (pointerX < firstCenter - radius ||
+                pointerX > lastCenter + radius)
                 return false;
 
             const centerY = orderedItems.reduce((sum, item) =>
@@ -697,8 +760,8 @@ class MacDockRenderer {
                 pointerY <= centerY + inwardReach;
         }
 
-        if (pointerY < first.baseCenterY - radius ||
-            pointerY > last.baseCenterY + radius)
+        if (pointerY < firstCenter - radius ||
+            pointerY > lastCenter + radius)
             return false;
 
         const centerX = orderedItems.reduce((sum, item) =>
@@ -720,35 +783,21 @@ class MacDockRenderer {
             1 + Math.max(0, this._settings.get_double('macos-magnification'));
         const radius =
             Math.max(32, this._settings.get_double('macos-magnification-radius'));
-        const orderedItems = this._orderedItems();
-        const growth = [];
-
-        for (const item of orderedItems) {
-            const center = horizontal ? item.baseCenterX : item.baseCenterY;
-            const distance = Math.abs(center - pointerAxis);
-            let influence = 0;
-
-            if (active && distance < radius) {
-                const q = Math.max(0, Math.min(1, 1 - distance / radius));
-                const s = Math.sin(q * Math.PI / 2);
-                influence = s * s;
-            }
-
-            item.targetScale = 1 + (maxScale - 1) * influence;
-            growth.push(item.baseSize * (item.targetScale - 1));
-        }
-
-        // Each icon receives half of all extra growth on its left minus half
-        // of all extra growth on its right. There is no nearest-icon anchor.
-        const totalGrowth = growth.reduce((sum, value) => sum + value, 0);
-        let leftGrowth = 0;
+        const orderedItems = this._orderedEffectItems();
+        const targets = computeMagnificationTargets({
+            items: orderedItems.map(item => ({
+                center: this._effectCenter(item, horizontal),
+                extent: this._effectExtent(item, horizontal),
+            })),
+            pointerAxis,
+            active,
+            maxScale,
+            radius,
+        });
 
         for (let i = 0; i < orderedItems.length; i++) {
-            const rightGrowth = totalGrowth - leftGrowth - growth[i];
-            orderedItems[i].targetOffset = active
-                ? 0.5 * (leftGrowth - rightGrowth)
-                : 0;
-            leftGrowth += growth[i];
+            orderedItems[i].targetScale = targets[i]?.scale ?? 1;
+            orderedItems[i].targetOffset = targets[i]?.offset ?? 0;
         }
     }
 
@@ -759,19 +808,41 @@ class MacDockRenderer {
             Math.max(0.5, this._settings.get_double('macos-spring-damping'));
         let moving = false;
 
-        for (const item of this._items) {
+        const effectItems = this._orderedEffectItems();
+        for (const item of effectItems) {
             [item.scale, item.scaleVelocity] = springStep(
                 item.scale, item.scaleVelocity, item.targetScale,
                 response, damping, dt);
-            [item.offset, item.offsetVelocity] = springStep(
-                item.offset, item.offsetVelocity, item.targetOffset,
-                response * 0.86, damping, dt);
+            if (this._coupleFrameOffsets && item.scale < 1) {
+                item.scale = 1;
+                if (item.scaleVelocity < 0)
+                    item.scaleVelocity = 0;
+            }
 
             if (Math.abs(item.scale - item.targetScale) > SPRING_EPSILON ||
-                Math.abs(item.offset - item.targetOffset) > OFFSET_EPSILON ||
                 Math.abs(item.scaleVelocity) > VELOCITY_EPSILON ||
-                Math.abs(item.offsetVelocity) > VELOCITY_EPSILON)
+                (!this._coupleFrameOffsets &&
+                 (Math.abs(item.offset - item.targetOffset) > OFFSET_EPSILON ||
+                  Math.abs(item.offsetVelocity) > VELOCITY_EPSILON)))
                 moving = true;
+        }
+
+        if (this._coupleFrameOffsets) {
+            const offsets = computeBalancedOffsets({
+                extents: effectItems.map(item =>
+                    this._effectExtent(item)),
+                scales: effectItems.map(item => item.scale),
+            });
+            for (let i = 0; i < effectItems.length; i++) {
+                effectItems[i].offset = offsets[i] ?? 0;
+                effectItems[i].offsetVelocity = 0;
+            }
+        } else {
+            for (const item of effectItems) {
+                [item.offset, item.offsetVelocity] = springStep(
+                    item.offset, item.offsetVelocity, item.targetOffset,
+                    response * 0.86, damping, dt);
+            }
         }
 
         return moving;
@@ -787,11 +858,12 @@ class MacDockRenderer {
             const renderScale = baseTextureScale * scale;
             let centerX = item.baseCenterX;
             let centerY = item.baseCenterY;
+            const layoutShift = item.layoutShift ?? 0;
 
             if (horizontal)
-                centerX += item.offset;
+                centerX += layoutShift + item.offset;
             else
-                centerY += item.offset;
+                centerY += layoutShift + item.offset;
 
             let actorX;
             let actorY;
@@ -822,11 +894,11 @@ class MacDockRenderer {
             // The nearly transparent native actor remains the real interaction
             // proxy and follows the same primary-axis geometry.
             if (horizontal) {
-                item.item.translationX = item.offset;
+                item.item.translationX = layoutShift + item.offset;
                 item.item.translationY = item.originalItemTranslationY ?? 0;
             } else {
                 item.item.translationX = item.originalItemTranslationX ?? 0;
-                item.item.translationY = item.offset;
+                item.item.translationY = layoutShift + item.offset;
             }
 
             item.source.set_scale(scale, scale);
@@ -954,7 +1026,7 @@ class MacDockRenderer {
         }
 
         const horizontal = this._dock.isHorizontal;
-        const orderedItems = this._orderedItems();
+        const orderedItems = this._orderedEffectItems();
         let minX = Number.POSITIVE_INFINITY;
         let minY = Number.POSITIVE_INFINITY;
         let maxX = Number.NEGATIVE_INFINITY;
@@ -967,8 +1039,11 @@ class MacDockRenderer {
             // macOS behavior: the material follows the translated tile slots
             // along the Dock's long axis, but keeps its normal cross-axis
             // thickness. Magnified icon artwork is allowed to bulge outside.
-            const x = item.baseRect.x + (horizontal ? item.offset : 0);
-            const y = item.baseRect.y + (horizontal ? 0 : item.offset);
+            const layoutShift = item.layoutShift ?? 0;
+            const x = item.baseRect.x +
+                (horizontal ? layoutShift + item.offset : 0);
+            const y = item.baseRect.y +
+                (horizontal ? 0 : layoutShift + item.offset);
 
             minX = Math.min(minX, x);
             minY = Math.min(minY, y);
@@ -1225,6 +1300,7 @@ class MacDockRenderer {
             item.offset = 0;
             item.offsetVelocity = 0;
             item.targetOffset = 0;
+            item.layoutShift = 0;
 
             try {
                 item.source.set_scale(1, 1);

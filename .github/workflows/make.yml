@@ -17,6 +17,7 @@ name: Build & Package
       - feature/macos-direct-input-v123
       - feature/macos-proxy-input-v124
       - feature/macos-root-layout-v127
+      - feature/macos-unified-fisheye-v128
 
 permissions:
   contents: read
@@ -54,102 +55,14 @@ jobs:
           node --check macDirectInputStability.js
           node --check macPrefs.js
           node --check prefs.js
+          node --check tests/macosGeometry.test.js
+          node --check tests/macosArchitecture.test.js
 
-      - name: Verify root layout ownership
-        run: |
-          grep -q 'computeTrayLayout' macDockInteractions.js
-          grep -q 'boundaryShift = desiredBoundaryStart - nativeBoundaryStart' macTrayLayout.js
-          grep -q 'state.shiftAmount = layout.boundaryShift' macDockInteractions.js
-          grep -q 'computeTrailingOverlapGuard' macThumbnailFisheyeBase.js
+      - name: Verify unified layout ownership
+        run: node --experimental-default-type=module tests/macosArchitecture.test.js
 
-          if grep -q 'totalPreviewExtent' macDockInteractions.js; then
-            echo 'old additive tray-width shift returned'
-            exit 1
-          fi
-          if grep -q '_replaceThumbnailLayout' macDirectInputStability.js; then
-            echo 'input layer owns thumbnail layout again'
-            exit 1
-          fi
-          if grep -q '_positionThumbnails(renderer' macDirectInputStability.js; then
-            echo 'input layer positions thumbnails again'
-            exit 1
-          fi
-          if grep -q 'cumulativeGrowth' macThumbnailFisheyeBase.js; then
-            echo 'fish-eye growth owns tray layout again'
-            exit 1
-          fi
-          if grep -q 'actor.set_position' macThumbnailFisheyeBase.js; then
-            echo 'fish-eye translates thumbnail actors again'
-            exit 1
-          fi
-
-      - name: Test canonical tray geometry
-        run: |
-          cp macTrayLayout.js /tmp/macTrayLayout.mjs
-          node --input-type=module <<'NODE'
-          import assert from 'node:assert/strict';
-          import {
-            computeTrayLayout,
-            computeTrailingOverlapGuard,
-            TRAILING_GAP,
-          } from '/tmp/macTrayLayout.mjs';
-
-          function horizontal(count, nativeBoundaryX) {
-            const previewSizes = Array.from({length: count}, (_, i) => ({
-              width: 52 + i * 7,
-              height: 32,
-            }));
-            const layout = computeTrayLayout({
-              horizontal: true,
-              previousRect: {x: 400, y: 30, width: 48, height: 48},
-              previousCenterX: 424,
-              previousCenterY: 54,
-              previewSizes,
-              boundaryRect: {x: nativeBoundaryX, y: 30, width: 48, height: 48},
-            });
-            const finalBoundary = nativeBoundaryX + layout.boundaryShift;
-            assert.equal(finalBoundary, layout.trayBounds.maxX + TRAILING_GAP);
-            return layout;
-          }
-
-          for (const count of [1, 2, 3, 5]) {
-            for (const nativeX of [500, 550, 700])
-              horizontal(count, nativeX);
-          }
-
-          const negative = horizontal(1, 700);
-          assert.ok(negative.boundaryShift < 0,
-            'must absorb an oversized native separator gap');
-          const positive = horizontal(3, 500);
-          assert.ok(positive.boundaryShift > 0,
-            'must also make room when the native boundary is too close');
-
-          const vertical = computeTrayLayout({
-            horizontal: false,
-            previousRect: {x: 20, y: 300, width: 48, height: 48},
-            previousCenterX: 44,
-            previousCenterY: 324,
-            previewSizes: [{width: 32, height: 55}, {width: 32, height: 61}],
-            boundaryRect: {x: 20, y: 520, width: 48, height: 48},
-          });
-          assert.equal(520 + vertical.boundaryShift,
-            vertical.trayBounds.maxY + TRAILING_GAP);
-
-          assert.equal(computeTrailingOverlapGuard({
-            horizontal: true,
-            previewRect: {x: 100, y: 0, width: 80, height: 40},
-            boundaryRect: {x: 184, y: 0, width: 48, height: 48},
-            minGap: 6,
-          }), 2);
-          assert.equal(computeTrailingOverlapGuard({
-            horizontal: true,
-            previewRect: {x: 100, y: 0, width: 70, height: 40},
-            boundaryRect: {x: 184, y: 0, width: 48, height: 48},
-            minGap: 6,
-          }), 0);
-
-          console.log('canonical tray layout invariants passed');
-          NODE
+      - name: Test unified Dock geometry
+        run: node --experimental-default-type=module tests/macosGeometry.test.js
 
       - name: Lint JavaScript
         run: make check
@@ -178,23 +91,22 @@ jobs:
       - name: Write build summary
         run: |
           {
-            echo '## Dash to Dock — macOS Native v127'
+            echo '## Dash to Dock — macOS Native v128'
             echo ''
-            echo 'Download the **dash-to-dock-macos-native-v127-root-layout** artifact below.'
+            echo 'Download the **dash-to-dock-macos-native-v128-unified-fisheye** artifact below.'
             echo ''
-            echo '- one canonical layout owns app → thumbnails → Trash/Show Apps geometry'
-            echo '- native separator spacing is absorbed instead of added to tray width'
-            echo '- trailing system displacement is an absolute delta and may be negative'
-            echo '- input proxies no longer position thumbnails or system items'
-            echo '- thumbnail fish-eye changes scale only and cannot rewrite base layout'
-            echo '- only real transformed overlap can add a temporary trailing guard'
-            echo '- 1/2/3/5-preview and horizontal/vertical geometry invariants are CI tested'
+            echo '- apps, previews, Trash/mounts and Show Apps share one fish-eye field'
+            echo '- every target uses its final canonical base center before spring integration'
+            echo '- balanced current-scale offsets preserve every adjacent visual gap'
+            echo '- no post-paint boundary movement or previous-frame geometry feedback remains'
+            echo '- stable input proxies remain separate from animated visual geometry'
+            echo '- heterogeneous, multi-preview, extreme-radius and vertical geometry are tested'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload ready-to-install extension
         uses: actions/upload-artifact@v4
         with:
-          name: dash-to-dock-macos-native-v127-root-layout
+          name: dash-to-dock-macos-native-v128-unified-fisheye
           path: _build/
           if-no-files-found: error
           retention-days: 30

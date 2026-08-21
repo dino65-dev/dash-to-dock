@@ -2,33 +2,24 @@
 
 import {
     Clutter,
-    GLib,
     St,
 } from './dependencies/gi.js';
 
 import {Main} from './dependencies/shell/ui.js';
 
-import {computeTrailingOverlapGuard} from './macTrayLayout.js';
-
-const SCALE_EPSILON = 0.0025;
-const VELOCITY_EPSILON = 0.02;
-const BOUNDARY_MIN_GAP = 6;
-
 /**
- * Magnifies minimized-window previews without owning layout.
+ * Paints minimized-window previews from the renderer's unified effect state.
  *
- * MacDockInteractions establishes the compact tray allocation once per frame.
- * This layer changes only compositor scale. No thumbnail position, material
- * width, or base trailing-system displacement is derived from spring growth.
- * If a single/centered preview visually reaches the trailing system section,
- * only that section receives the exact positive overlap correction needed.
+ * MacDockEffects owns the one app -> preview -> system-item magnification wave.
+ * MacDockInteractions owns base positions and primary-axis offsets. This class
+ * applies only the already-integrated scale and paint order, so it cannot create
+ * a second coordinate system or move Trash after its target was calculated.
  */
 export class MacThumbnailFisheye {
     constructor(interactions) {
         this._interactions = interactions;
         this._settings = interactions?._settings ?? null;
         this._previewStates = new WeakMap();
-        this._rendererFrameTimes = new WeakMap();
 
         this._originalCreateThumbnail = interactions?._createThumbnail ?? null;
         this._originalPostPaintItems = interactions?._postPaintItems ?? null;
@@ -70,7 +61,6 @@ export class MacThumbnailFisheye {
             renderer._wake?.();
         }
 
-        this._rendererFrameTimes = new WeakMap();
         this._previewStates = new WeakMap();
         this._originalCreateThumbnail = null;
         this._originalPostPaintItems = null;
@@ -148,12 +138,25 @@ export class MacThumbnailFisheye {
         }
 
         renderer._layer.add_child(actor);
-        const preview = {actor, clone, window};
-        this._previewStates.set(preview, {
+        const effectItem = {
+            kind: 'thumbnail',
+            actor,
+            baseSize: Math.max(width + 2, height + 2),
+            effectExtent: width + 2,
             scale: 1,
-            velocity: 0,
+            scaleVelocity: 0,
             targetScale: 1,
-        });
+            offset: 0,
+            offsetVelocity: 0,
+            targetOffset: 0,
+            layoutShift: 0,
+            baseCenterX: 0,
+            baseCenterY: 0,
+            baseRect: null,
+        };
+        const preview = {actor, clone, window, effectItem};
+        effectItem.preview = preview;
+        this._previewStates.set(preview, effectItem);
         return preview;
     }
 
@@ -168,124 +171,38 @@ export class MacThumbnailFisheye {
         if (!previews.length)
             return;
 
-        const now = GLib.get_monotonic_time() / 1000;
-        const previousFrame =
-            this._rendererFrameTimes.get(renderer) ?? now - 1000 / 60;
-        let dt = (now - previousFrame) / 1000;
-        if (!Number.isFinite(dt) || dt <= 0)
-            dt = 1 / 60;
-        dt = Math.min(dt, 0.05);
-        this._rendererFrameTimes.set(renderer, now);
-
-        const [pointerX, pointerY] = global.get_pointer();
-        const horizontal = renderer._dock.isHorizontal;
-        const pointerAxis = horizontal ? pointerX : pointerY;
-        const maxScale = 1 + Math.max(0,
-            this._settings.get_double('macos-magnification'));
-        const radius = Math.max(32,
-            this._settings.get_double('macos-magnification-radius'));
-        const response = Math.max(8,
-            this._settings.get_double('macos-spring-response'));
-        const damping = Math.max(0.5,
-            this._settings.get_double('macos-spring-damping'));
-        const active =
-            !!renderer._pointerInActivationZone?.(pointerX, pointerY);
-        let moving = false;
         const scaled = [];
 
-        for (let i = 0; i < previews.length; i++) {
-            const preview = previews[i];
-            const actor = preview.actor;
-            const [width, height] = actor.get_size();
-            const center = horizontal
-                ? actor.x + width / 2
-                : actor.y + height / 2;
-            const distance = Math.abs(center - pointerAxis);
-            let influence = 0;
-
-            if (active && distance < radius) {
-                const q = Math.max(0, Math.min(1, 1 - distance / radius));
-                const sin = Math.sin(q * Math.PI / 2);
-                influence = sin * sin;
-            }
-
+        for (const preview of previews) {
+            const {actor} = preview;
             const previewState = this._previewState(preview);
-            previewState.targetScale =
-                1 + (maxScale - 1) * influence;
-            [previewState.scale, previewState.velocity] = springStep(
-                previewState.scale,
-                previewState.velocity,
-                previewState.targetScale,
-                response,
-                damping,
-                dt);
-
-            if (Math.abs(previewState.scale - previewState.targetScale) >
-                SCALE_EPSILON ||
-                Math.abs(previewState.velocity) > VELOCITY_EPSILON)
-                moving = true;
-
-            const [pivotX, pivotY] = this._pivotForPreview(
-                renderer, i, previews.length);
+            const [pivotX, pivotY] = this._pivotForPosition(renderer);
+            const scale = Number.isFinite(previewState.scale)
+                ? Math.max(1, previewState.scale)
+                : 1;
             actor.set_pivot_point(pivotX, pivotY);
-            actor.set_scale(previewState.scale, previewState.scale);
-            scaled.push({actor, scale: previewState.scale});
+            actor.set_scale(scale, scale);
+            scaled.push({actor, scale});
         }
 
         // Keep the most magnified preview above neighboring preview artwork.
         scaled.sort((a, b) => a.scale - b.scale);
         for (const entry of scaled)
             entry.actor.raise_top?.();
-
-        const boundary = this._trailingBoundaryItem(renderer, state);
-        const lastPreview = previews.at(-1);
-        const guard = computeTrailingOverlapGuard({
-            horizontal,
-            previewRect: transformedRect(lastPreview?.actor),
-            boundaryRect: transformedRect(boundary?.actor),
-            minGap: BOUNDARY_MIN_GAP,
-        });
-
-        if (guard > 0.001 && state.specialIndex >= 0) {
-            const items = renderer._orderedItems();
-            for (let i = state.specialIndex; i < items.length; i++)
-                this._interactions._shiftPaintedItem(renderer, items[i], guard);
-            state.shiftAmount += guard;
-            state.boundaryGuard = guard;
-        } else {
-            state.boundaryGuard = 0;
-        }
-
-        if (active || moving)
-            renderer._wake?.();
-    }
-
-    _trailingBoundaryItem(renderer, state) {
-        const items = renderer._orderedItems?.() ?? renderer._items ?? [];
-        if (state.specialIndex >= 0)
-            return items[state.specialIndex] ?? null;
-        return null;
-    }
-
-    _pivotForPreview(renderer, index, count) {
-        const primary = count > 1 ? index / (count - 1) : 0.25;
-        switch (renderer._dock.position) {
-        case St.Side.TOP:
-            return [primary, 0];
-        case St.Side.LEFT:
-            return [0, primary];
-        case St.Side.RIGHT:
-            return [1, primary];
-        case St.Side.BOTTOM:
-        default:
-            return [primary, 1];
-        }
     }
 
     _previewState(preview) {
-        let state = this._previewStates.get(preview);
+        let state = preview?.effectItem ?? this._previewStates.get(preview);
         if (!state) {
-            state = {scale: 1, velocity: 0, targetScale: 1};
+            state = {
+                scale: 1,
+                scaleVelocity: 0,
+                targetScale: 1,
+                offset: 0,
+                offsetVelocity: 0,
+                targetOffset: 0,
+            };
+            preview.effectItem = state;
             this._previewStates.set(preview, state);
         }
         return state;
@@ -304,40 +221,4 @@ export class MacThumbnailFisheye {
             return [0.5, 1];
         }
     }
-}
-
-
-function transformedRect(actor) {
-    if (!actor?.visible)
-        return null;
-
-    try {
-        const [x, y] = actor.get_transformed_position();
-        const [width, height] = actor.get_transformed_size();
-        if ([x, y, width, height].every(Number.isFinite) &&
-            width > 0 && height > 0)
-            return {x, y, width, height};
-    } catch {
-        // Actor may disappear during a window/dock rebuild.
-    }
-    return null;
-}
-
-/**
- * Stable implicit integration of the same damped second-order spring used by
- * macDockEffects.js:
- *
- *   x'' + 2*zeta*omega*x' + omega^2*(x - target) = 0
- */
-function springStep(value, velocity, target, omega, damping, dt) {
-    const f = 1 + 2 * dt * damping * omega;
-    const oo = omega * omega;
-    const hoo = dt * oo;
-    const hhoo = dt * hoo;
-    const inverseDeterminant = 1 / (f + hhoo);
-    const nextValue =
-        (f * value + dt * velocity + hhoo * target) * inverseDeterminant;
-    const nextVelocity =
-        (velocity + hoo * (target - value)) * inverseDeterminant;
-    return [nextValue, nextVelocity];
 }

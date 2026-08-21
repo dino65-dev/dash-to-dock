@@ -75,20 +75,84 @@ export function computeTrayLayout({
     return {previewRects, trayBounds, boundaryShift};
 }
 
-/** Return the minimum positive trailing shift required to remove a visual overlap. */
-export function computeTrailingOverlapGuard({
-    horizontal,
-    previewRect,
-    boundaryRect,
-    minGap = 6,
+/**
+ * Calculate a single fish-eye field for heterogeneous Dock items.
+ *
+ * `center` and `extent` are expressed on the Dock's primary axis. The caller
+ * can therefore mix square app icons with rectangular window previews without
+ * making either renderer understand the other's actor type.
+ */
+export function computeMagnificationTargets({
+    items,
+    pointerAxis,
+    active,
+    maxScale,
+    radius,
 }) {
-    if (!previewRect || !boundaryRect)
-        return 0;
+    if (!items?.length)
+        return [];
 
-    const previewEnd = horizontal
-        ? previewRect.x + previewRect.width
-        : previewRect.y + previewRect.height;
-    const boundaryStart = horizontal ? boundaryRect.x : boundaryRect.y;
-    const guard = previewEnd + Math.max(0, minGap) - boundaryStart;
-    return Number.isFinite(guard) ? Math.max(0, guard) : 0;
+    const safePointer = Number.isFinite(pointerAxis) ? pointerAxis : 0;
+    const safeMaxScale = Number.isFinite(maxScale)
+        ? Math.max(1, maxScale)
+        : 1;
+    const safeRadius = Number.isFinite(radius) ? Math.max(1, radius) : 1;
+    const scales = items.map(item => {
+        const center = Number.isFinite(item?.center) ? item.center : 0;
+        const distance = Math.abs(center - safePointer);
+        let influence = 0;
+
+        if (active && distance < safeRadius) {
+            const q = Math.max(0, Math.min(1, 1 - distance / safeRadius));
+            const sin = Math.sin(q * Math.PI / 2);
+            influence = sin * sin;
+        }
+
+        return 1 + (safeMaxScale - 1) * influence;
+    });
+    const offsets = computeBalancedOffsets({
+        extents: items.map(item => item?.extent),
+        scales,
+    });
+
+    return scales.map((scale, index) => ({
+        scale,
+        offset: offsets[index],
+    }));
+}
+
+/**
+ * Fan scaled items out around one fixed group center.
+ *
+ * For every adjacent pair, the offset difference is exactly half of both
+ * items' current growth. Their visual gap therefore remains equal to the base
+ * layout gap at every animation frame, without maximum-size placeholder slots.
+ */
+export function computeBalancedOffsets({extents, scales}) {
+    const count = Math.min(extents?.length ?? 0, scales?.length ?? 0);
+    if (!count)
+        return [];
+
+    const growth = [];
+    for (let i = 0; i < count; i++) {
+        const extent = Number.isFinite(extents[i])
+            ? Math.max(0, extents[i])
+            : 0;
+        const scale = Number.isFinite(scales[i])
+            ? Math.max(1, scales[i])
+            : 1;
+        growth.push(extent * (scale - 1));
+    }
+
+    const totalGrowth = growth.reduce((sum, value) => sum + value, 0);
+    const offsets = [];
+    let leadingGrowth = 0;
+
+    for (let i = 0; i < count; i++) {
+        const trailingGrowth = totalGrowth - leadingGrowth - growth[i];
+        offsets.push(0.5 * (leadingGrowth - trailingGrowth));
+        leadingGrowth += growth[i];
+    }
+
+    return offsets;
 }
